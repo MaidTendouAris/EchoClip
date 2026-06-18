@@ -1,0 +1,9 @@
+[package]
+name = "echoclip_windows_demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+echoclip_core = { path = "../../crates/echoclip_core" }

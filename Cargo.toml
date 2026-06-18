@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "apps/windows_demo",
+    "crates/echoclip_android_jni",
+    "crates/echoclip_core",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["EchoClip"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
