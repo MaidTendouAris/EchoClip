@@ -1,167 +1,264 @@
-use std::ffi::c_void;
-use std::mem::transmute;
-use std::ptr;
-use std::sync::Mutex;
+use std::io;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 
-use echoclip_core::{AudioConfig, RingBuffer};
+use echoclip_core::{AudioConfig, CoreConfig, ExportFormat, ExportOptions, RecorderWorker};
+use jni::JNIEnv;
+use jni::objects::{JObject, JShortArray, JString};
+use jni::sys::{jint, jlong, jstring};
 
-type JInt = i32;
-type JLong = i64;
-type JShortArray = *mut c_void;
-type JObject = *mut c_void;
-type JNIEnv = *mut c_void;
-
-type SharedBuffer = Mutex<RingBuffer>;
-
-const GET_ARRAY_LENGTH_SLOT: usize = 171;
-const NEW_SHORT_ARRAY_SLOT: usize = 178;
-const GET_SHORT_ARRAY_REGION_SLOT: usize = 202;
-const SET_SHORT_ARRAY_REGION_SLOT: usize = 210;
+type WorkerHandle = RecorderWorker;
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeCreate(
-    _env: JNIEnv,
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStartRecorder(
+    mut env: JNIEnv,
     _this: JObject,
-    sample_rate: JInt,
-    channels: JInt,
-    capacity_seconds: JInt,
-) -> JLong {
-    let config = AudioConfig {
-        sample_rate: sample_rate.max(1) as u32,
-        channels: channels.max(1) as u16,
-    };
-    let buffer = RingBuffer::new(config, capacity_seconds.max(1) as f32);
-    Box::into_raw(Box::new(Mutex::new(buffer))) as JLong
+    temp_dir: JString,
+    sample_rate: jint,
+    channels: jint,
+    segment_seconds: jint,
+    max_replay_seconds: jint,
+    queue_capacity_chunks: jint,
+) -> jlong {
+    catch_jni_long(|| {
+        let temp_dir = java_string(&mut env, &temp_dir)?;
+        let mut config = CoreConfig::new(PathBuf::from(temp_dir));
+        config.audio = AudioConfig {
+            sample_rate: sample_rate.max(1) as u32,
+            channels: channels.max(1) as u16,
+        };
+        config.segment_seconds = segment_seconds.max(1) as u32;
+        config.max_replay_seconds = max_replay_seconds.max(1) as u32;
+
+        let worker =
+            RecorderWorker::start_with_queue(config, queue_capacity_chunks.max(1) as usize)?;
+        Ok(Box::into_raw(Box::new(worker)) as jlong)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeDestroy(
     _env: JNIEnv,
     _this: JObject,
-    handle: JLong,
+    handle: jlong,
 ) {
-    if handle == 0 {
-        return;
-    }
-
-    unsafe {
-        let _ = Box::from_raw(handle as *mut SharedBuffer);
-    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if handle != 0 {
+            unsafe {
+                let _ = Box::from_raw(handle as *mut WorkerHandle);
+            }
+        }
+    }));
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativePush(
-    env: JNIEnv,
-    _this: JObject,
-    handle: JLong,
-    samples: JShortArray,
-    count: JInt,
-) {
-    if handle == 0 || samples.is_null() || count <= 0 {
-        return;
-    }
-
-    let available = unsafe { get_array_length(env, samples) }.min(count);
-    if available <= 0 {
-        return;
-    }
-
-    let mut input = vec![0_i16; available as usize];
-    unsafe {
-        get_short_array_region(env, samples, 0, available, input.as_mut_ptr());
-    }
-
-    let buffer = unsafe { &*(handle as *mut SharedBuffer) };
-    if let Ok(mut buffer) = buffer.lock() {
-        buffer.push_samples(&input);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeAvailableSeconds(
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStopRecorder(
     _env: JNIEnv,
     _this: JObject,
-    handle: JLong,
-) -> JInt {
-    if handle == 0 {
-        return 0;
-    }
-
-    let buffer = unsafe { &*(handle as *mut SharedBuffer) };
-    buffer
-        .lock()
-        .map(|buffer| buffer.available_seconds().floor() as JInt)
-        .unwrap_or(0)
+    handle: jlong,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(worker) = worker_mut(handle) {
+            worker.stop();
+        }
+    }));
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeLatest(
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativePushPcm(
     env: JNIEnv,
     _this: JObject,
-    handle: JLong,
-    seconds: JInt,
-) -> JShortArray {
-    if handle == 0 || seconds <= 0 {
-        return unsafe { new_short_array(env, 0) };
+    handle: jlong,
+    samples: JShortArray,
+    count: jint,
+) -> jint {
+    catch_jni_int(|| {
+        if handle == 0 || count <= 0 {
+            return Ok(3);
+        }
+        let worker = worker_ref(handle)?;
+        let available = env.get_array_length(&samples)?.min(count);
+        if available <= 0 {
+            return Ok(0);
+        }
+
+        let mut input = vec![0_i16; available as usize];
+        env.get_short_array_region(&samples, 0, &mut input)?;
+        match worker.push_samples(&input) {
+            Ok(()) => Ok(0),
+            Err(error) => {
+                let text = error.to_string();
+                if text.contains("queue is full") {
+                    Ok(1)
+                } else if text.contains("stopped") {
+                    Ok(2)
+                } else if text.contains("closed") {
+                    Ok(5)
+                } else {
+                    Ok(6)
+                }
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeAvailableMillis(
+    _env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+) -> jlong {
+    catch_jni_long(|| {
+        let worker = worker_ref(handle)?;
+        Ok(worker.status().available_millis as jlong)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeSaveLatestToCache(
+    mut env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+    seconds: jint,
+    output_path: JString,
+    format: JString,
+    mp3_bitrate_kbps: jint,
+    ffmpeg_path: JString,
+) -> jlong {
+    catch_jni_long(|| {
+        let worker = worker_ref(handle)?;
+        let output_path = java_string(&mut env, &output_path)?;
+        let format = java_string(&mut env, &format)?;
+        let ffmpeg_path = java_string(&mut env, &ffmpeg_path)?;
+        let options = ExportOptions {
+            format: parse_export_format(&format),
+            mp3_bitrate_kbps: mp3_bitrate_kbps.max(32) as u32,
+            ffmpeg_path: if ffmpeg_path.trim().is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(ffmpeg_path))
+            },
+        };
+        Ok(worker.save_latest_async(seconds.max(1) as u32, output_path, options)? as jlong)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStatusJson(
+    env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+) -> jstring {
+    catch_jni_string(env, || {
+        let worker = worker_ref(handle)?;
+        Ok(serde_json::to_string(&worker.status())?)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeExportStatusJson(
+    env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+    job_id: jlong,
+) -> jstring {
+    catch_jni_string(env, || {
+        let worker = worker_ref(handle)?;
+        match worker.export_status(job_id as u64) {
+            Some(status) => Ok(serde_json::to_string(&status)?),
+            None => Ok(format!(
+                "{{\"id\":{},\"state\":\"Failed\",\"error\":\"job_not_found\"}}",
+                job_id
+            )),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeCancelExport(
+    _env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+    job_id: jlong,
+) -> jint {
+    catch_jni_int(|| {
+        let worker = worker_ref(handle)?;
+        Ok(if worker.cancel_export(job_id as u64) {
+            0
+        } else {
+            1
+        })
+    })
+}
+
+fn worker_ref(handle: jlong) -> Result<&'static WorkerHandle, io::Error> {
+    if handle == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid_handle",
+        ));
     }
-
-    let buffer = unsafe { &*(handle as *mut SharedBuffer) };
-    let samples = match buffer.lock() {
-        Ok(buffer) => buffer.latest(seconds as f32).samples,
-        Err(_) => return unsafe { new_short_array(env, 0) },
-    };
-
-    let output = unsafe { new_short_array(env, samples.len() as JInt) };
-    if output.is_null() {
-        return ptr::null_mut();
-    }
-
     unsafe {
-        set_short_array_region(env, output, 0, samples.len() as JInt, samples.as_ptr());
+        (handle as *const WorkerHandle)
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid_handle"))
     }
-    output
 }
 
-unsafe fn table(env: JNIEnv) -> *const *const c_void {
-    unsafe { *(env as *mut *const *const c_void) }
+fn worker_mut(handle: jlong) -> Option<&'static mut WorkerHandle> {
+    if handle == 0 {
+        return None;
+    }
+    unsafe { (handle as *mut WorkerHandle).as_mut() }
 }
 
-unsafe fn table_fn(env: JNIEnv, slot: usize) -> *const c_void {
-    unsafe { *table(env).add(slot) }
+fn java_string(env: &mut JNIEnv, value: &JString) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(env.get_string(value)?.into())
 }
 
-unsafe fn get_array_length(env: JNIEnv, array: JShortArray) -> JInt {
-    let function: extern "system" fn(JNIEnv, JShortArray) -> JInt =
-        unsafe { transmute(table_fn(env, GET_ARRAY_LENGTH_SLOT)) };
-    function(env, array)
+fn parse_export_format(value: &str) -> ExportFormat {
+    if value.eq_ignore_ascii_case("wav") {
+        ExportFormat::Wav
+    } else {
+        ExportFormat::Mp3
+    }
 }
 
-unsafe fn new_short_array(env: JNIEnv, len: JInt) -> JShortArray {
-    let function: extern "system" fn(JNIEnv, JInt) -> JShortArray =
-        unsafe { transmute(table_fn(env, NEW_SHORT_ARRAY_SLOT)) };
-    function(env, len)
+fn catch_jni_long(action: impl FnOnce() -> Result<jlong, Box<dyn std::error::Error>>) -> jlong {
+    match catch_unwind(AssertUnwindSafe(action)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) | Err(_) => 0,
+    }
 }
 
-unsafe fn get_short_array_region(
+fn catch_jni_int(action: impl FnOnce() -> Result<jint, Box<dyn std::error::Error>>) -> jint {
+    match catch_unwind(AssertUnwindSafe(action)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => 3,
+        Err(_) => 4,
+    }
+}
+
+fn catch_jni_string(
     env: JNIEnv,
-    array: JShortArray,
-    start: JInt,
-    len: JInt,
-    output: *mut i16,
-) {
-    let function: extern "system" fn(JNIEnv, JShortArray, JInt, JInt, *mut i16) =
-        unsafe { transmute(table_fn(env, GET_SHORT_ARRAY_REGION_SLOT)) };
-    function(env, array, start, len, output);
+    action: impl FnOnce() -> Result<String, Box<dyn std::error::Error>>,
+) -> jstring {
+    let text = match catch_unwind(AssertUnwindSafe(action)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => format!("{{\"error\":\"{}\"}}", escape_json(&error.to_string())),
+        Err(_) => "{\"error\":\"panic\"}".to_string(),
+    };
+    match env.new_string(text) {
+        Ok(value) => value.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
-unsafe fn set_short_array_region(
-    env: JNIEnv,
-    array: JShortArray,
-    start: JInt,
-    len: JInt,
-    input: *const i16,
-) {
-    let function: extern "system" fn(JNIEnv, JShortArray, JInt, JInt, *const i16) =
-        unsafe { transmute(table_fn(env, SET_SHORT_ARRAY_REGION_SLOT)) };
-    function(env, array, start, len, input);
+fn escape_json(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }

@@ -1,127 +1,258 @@
 package com.echoclip.echoclip
 
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.min
+import org.json.JSONObject
 
 object RustAudioCore {
-    private val nextHandle = AtomicLong(1)
-    private val fallbackBuffers = ConcurrentHashMap<Long, FallbackRingBuffer>()
     private val nativeAvailable: Boolean = runCatching {
         System.loadLibrary("echoclip_android_jni")
     }.isSuccess
 
     fun backendName(): String = if (nativeAvailable) {
-        "rust+jni"
+        "rust+jni+segments"
     } else {
-        "kotlin-fallback"
+        "rust-native-unavailable"
     }
 
-    fun create(sampleRate: Int, channels: Int, capacitySeconds: Int): Long {
-        fun createFallback(handle: Long): Long {
-            fallbackBuffers[handle] = FallbackRingBuffer(
-                sampleRate = sampleRate,
-                channels = channels,
-                capacitySeconds = capacitySeconds,
+    fun startRecorder(
+        tempDir: String,
+        sampleRate: Int,
+        channels: Int,
+        segmentSeconds: Int,
+        maxReplaySeconds: Int,
+        queueCapacityChunks: Int,
+    ): Long {
+        if (!nativeAvailable) {
+            return 0L
+        }
+        return runCatching {
+            nativeStartRecorder(
+                tempDir,
+                sampleRate,
+                channels,
+                segmentSeconds,
+                maxReplaySeconds,
+                queueCapacityChunks,
             )
-            return handle
-        }
-
-        if (nativeAvailable) {
-            runCatching {
-                val handle = nativeCreate(sampleRate, channels, capacitySeconds)
-                if (handle != 0L) {
-                    return createFallback(handle)
-                }
-            }
-        }
-
-        val handle = nextHandle.getAndIncrement()
-        return createFallback(handle)
+        }.getOrDefault(0L)
     }
 
     fun destroy(handle: Long) {
-        if (nativeAvailable) {
+        if (nativeAvailable && handle != 0L) {
             runCatching { nativeDestroy(handle) }
         }
-        fallbackBuffers.remove(handle)
     }
 
-    fun push(handle: Long, samples: ShortArray, count: Int) {
-        if (nativeAvailable) {
-            runCatching {
-                nativePush(handle, samples, count)
-            }
+    fun stopRecorder(handle: Long) {
+        if (nativeAvailable && handle != 0L) {
+            runCatching { nativeStopRecorder(handle) }
         }
-        fallbackBuffers[handle]?.push(samples, count)
     }
 
-    fun availableSeconds(handle: Long): Int {
-        if (nativeAvailable) {
-            runCatching {
-                val available = nativeAvailableSeconds(handle)
-                if (available > 0) {
-                    return available
-                }
-            }
+    fun pushPcm(handle: Long, samples: ShortArray, count: Int): Int {
+        if (!nativeAvailable || handle == 0L) {
+            return PushCode.INVALID_HANDLE
         }
-        return fallbackBuffers[handle]?.availableSeconds() ?: 0
+        return runCatching {
+            nativePushPcm(handle, samples, count)
+        }.getOrDefault(PushCode.PANIC_CAUGHT)
     }
 
-    fun latest(handle: Long, seconds: Int): ShortArray {
-        if (nativeAvailable) {
-            runCatching {
-                val samples = nativeLatest(handle, seconds)
-                if (samples.isNotEmpty()) {
-                    return samples
-                }
-            }
+    fun availableMillis(handle: Long): Long {
+        if (!nativeAvailable || handle == 0L) {
+            return 0L
         }
-        return fallbackBuffers[handle]?.latest(seconds) ?: ShortArray(0)
+        return runCatching {
+            nativeAvailableMillis(handle)
+        }.getOrDefault(0L)
     }
 
-    private external fun nativeCreate(sampleRate: Int, channels: Int, capacitySeconds: Int): Long
+    fun status(handle: Long): RustRecorderStatus {
+        if (!nativeAvailable || handle == 0L) {
+            return RustRecorderStatus(lastError = "native_unavailable")
+        }
+        val json = runCatching { nativeStatusJson(handle) }.getOrNull()
+        return RustRecorderStatus.fromJson(json)
+    }
+
+    fun saveLatestToCache(
+        handle: Long,
+        seconds: Int,
+        outputPath: String,
+        format: String,
+        mp3BitrateKbps: Int,
+        ffmpegPath: String?,
+    ): Long {
+        if (!nativeAvailable || handle == 0L) {
+            return 0L
+        }
+        return runCatching {
+            nativeSaveLatestToCache(
+                handle,
+                seconds,
+                outputPath,
+                format,
+                mp3BitrateKbps,
+                ffmpegPath.orEmpty(),
+            )
+        }.getOrDefault(0L)
+    }
+
+    fun exportStatus(handle: Long, jobId: Long): RustExportStatus {
+        if (!nativeAvailable || handle == 0L || jobId == 0L) {
+            return RustExportStatus(
+                id = jobId,
+                state = "Failed",
+                error = "native_unavailable",
+            )
+        }
+        val json = runCatching { nativeExportStatusJson(handle, jobId) }.getOrNull()
+        return RustExportStatus.fromJson(json, jobId)
+    }
+
+    fun cancelExport(handle: Long, jobId: Long): Boolean {
+        if (!nativeAvailable || handle == 0L || jobId == 0L) {
+            return false
+        }
+        return runCatching {
+            nativeCancelExport(handle, jobId) == 0
+        }.getOrDefault(false)
+    }
+
+    private external fun nativeStartRecorder(
+        tempDir: String,
+        sampleRate: Int,
+        channels: Int,
+        segmentSeconds: Int,
+        maxReplaySeconds: Int,
+        queueCapacityChunks: Int,
+    ): Long
+
     private external fun nativeDestroy(handle: Long)
-    private external fun nativePush(handle: Long, samples: ShortArray, count: Int)
-    private external fun nativeAvailableSeconds(handle: Long): Int
-    private external fun nativeLatest(handle: Long, seconds: Int): ShortArray
+    private external fun nativeStopRecorder(handle: Long)
+    private external fun nativePushPcm(handle: Long, samples: ShortArray, count: Int): Int
+    private external fun nativeAvailableMillis(handle: Long): Long
+    private external fun nativeSaveLatestToCache(
+        handle: Long,
+        seconds: Int,
+        outputPath: String,
+        format: String,
+        mp3BitrateKbps: Int,
+        ffmpegPath: String,
+    ): Long
+    private external fun nativeStatusJson(handle: Long): String
+    private external fun nativeExportStatusJson(handle: Long, jobId: Long): String
+    private external fun nativeCancelExport(handle: Long, jobId: Long): Int
 }
 
-private class FallbackRingBuffer(
-    private val sampleRate: Int,
-    channels: Int,
-    capacitySeconds: Int,
+object PushCode {
+    const val OK = 0
+    const val QUEUE_FULL = 1
+    const val WORKER_STOPPED = 2
+    const val INVALID_HANDLE = 3
+    const val PANIC_CAUGHT = 4
+    const val QUEUE_CLOSED = 5
+    const val OTHER_ERROR = 6
+}
+
+data class RustRecorderStatus(
+    val running: Boolean = false,
+    val availableMillis: Long = 0L,
+    val oldestRetainedMillis: Long = 0L,
+    val latestSampleMillis: Long = 0L,
+    val totalSamplesWritten: Long = 0L,
+    val retainedStartSample: Long = 0L,
+    val segmentCount: Int = 0,
+    val tempBytes: Long = 0L,
+    val estimatedMaxPcmBytes: Long = 0L,
+    val queueCapacityChunks: Int = 0,
+    val queuedChunks: Int = 0,
+    val droppedChunks: Long = 0L,
+    val activeExports: Int = 0,
+    val exportJobs: List<RustExportStatus> = emptyList(),
+    val writerLastFlushUnixMillis: Long = 0L,
+    val recovered: Boolean = false,
+    val recoveryWarning: String? = null,
+    val lastError: String? = null,
 ) {
-    private val lock = Any()
-    private val samples = ShortArray(sampleRate * channels * capacitySeconds)
-    private var writePosition = 0
-    private var availableSamples = 0
-
-    fun push(input: ShortArray, count: Int) {
-        synchronized(lock) {
-            for (index in 0 until min(count, input.size)) {
-                samples[writePosition] = input[index]
-                writePosition = (writePosition + 1) % samples.size
-                availableSamples = min(availableSamples + 1, samples.size)
+    companion object {
+        fun fromJson(json: String?): RustRecorderStatus {
+            if (json.isNullOrBlank()) {
+                return RustRecorderStatus(lastError = "empty_status")
+            }
+            return runCatching {
+                val value = JSONObject(json)
+                RustRecorderStatus(
+                    running = value.optBoolean("running"),
+                    availableMillis = value.optLong("available_millis"),
+                    oldestRetainedMillis = value.optLong("oldest_retained_millis"),
+                    latestSampleMillis = value.optLong("latest_sample_millis"),
+                    totalSamplesWritten = value.optLong("total_samples_written"),
+                    retainedStartSample = value.optLong("retained_start_sample"),
+                    segmentCount = value.optInt("segment_count"),
+                    tempBytes = value.optLong("temp_bytes"),
+                    estimatedMaxPcmBytes = value.optLong("estimated_max_pcm_bytes"),
+                    queueCapacityChunks = value.optInt("queue_capacity_chunks"),
+                    queuedChunks = value.optInt("queued_chunks"),
+                    droppedChunks = value.optLong("dropped_chunks"),
+                    activeExports = value.optInt("active_exports"),
+                    exportJobs = buildList {
+                        val jobs = value.optJSONArray("export_jobs")
+                        if (jobs != null) {
+                            for (index in 0 until jobs.length()) {
+                                add(RustExportStatus.fromJson(jobs.optJSONObject(index)?.toString(), 0L))
+                            }
+                        }
+                    },
+                    writerLastFlushUnixMillis = value.optLong("writer_last_flush_unix_millis"),
+                    recovered = value.optBoolean("recovered"),
+                    recoveryWarning = value.optString("recovery_warning").ifBlank { null },
+                    lastError = value.optString("last_error").ifBlank { null },
+                )
+            }.getOrElse {
+                RustRecorderStatus(lastError = "status_parse_failed:${it.message}")
             }
         }
     }
+}
 
-    fun availableSeconds(): Int {
-        synchronized(lock) {
-            return availableSamples / sampleRate
-        }
-    }
+data class RustExportStatus(
+    val id: Long,
+    val state: String,
+    val requestedSeconds: Int = 0,
+    val outputPath: String? = null,
+    val samplesWritten: Long = 0L,
+    val format: String? = null,
+    val error: String? = null,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "id" to id,
+        "state" to state,
+        "requestedSeconds" to requestedSeconds,
+        "outputPath" to outputPath,
+        "samplesWritten" to samplesWritten,
+        "format" to format,
+        "error" to error,
+    )
 
-    fun latest(seconds: Int): ShortArray {
-        synchronized(lock) {
-            val count = min(seconds * sampleRate, availableSamples)
-            val output = ShortArray(count)
-            val start = (writePosition + samples.size - count) % samples.size
-            for (index in 0 until count) {
-                output[index] = samples[(start + index) % samples.size]
+    companion object {
+        fun fromJson(json: String?, fallbackId: Long): RustExportStatus {
+            if (json.isNullOrBlank()) {
+                return RustExportStatus(fallbackId, "Failed", error = "empty_export_status")
             }
-            return output
+            return runCatching {
+                val value = JSONObject(json)
+                RustExportStatus(
+                    id = value.optLong("id", fallbackId),
+                    state = value.optString("state", "Failed"),
+                    requestedSeconds = value.optInt("requested_seconds"),
+                    outputPath = value.optString("output_path").ifBlank { null },
+                    samplesWritten = value.optLong("samples_written"),
+                    format = value.optString("format").ifBlank { null },
+                    error = value.optString("error").ifBlank { null },
+                )
+            }.getOrElse {
+                RustExportStatus(fallbackId, "Failed", error = "export_parse_failed:${it.message}")
+            }
         }
     }
 }

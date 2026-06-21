@@ -463,10 +463,17 @@ class _EchoClipHomeState extends State<EchoClipHome> {
           return;
         }
 
+        final pending = response?['pending'] == true;
         setState(() {
-          _platformStatus = 'Saved Android WAV clip';
+          _platformStatus = pending
+              ? 'Android save started'
+              : 'Android clip saved';
         });
-        await _loadRecordings();
+        if (pending) {
+          unawaited(_reloadRecordingsAfterSave());
+        } else {
+          await _loadRecordings();
+        }
         return;
       } on PlatformException catch (error) {
         if (!mounted) {
@@ -495,6 +502,13 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         ),
       );
     });
+  }
+
+  Future<void> _reloadRecordingsAfterSave() async {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    await _loadRecordings();
+    await Future<void>.delayed(const Duration(seconds: 3));
+    await _loadRecordings();
   }
 
   Future<void> _loadRecordings() async {
@@ -641,12 +655,102 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     await _runLibraryMutation('deleteRecording', {'uri': clip.uri});
   }
 
+  Future<void> _deleteClips(List<ClipItem> clips) async {
+    if (defaultTargetPlatform != TargetPlatform.android || clips.isEmpty) {
+      return;
+    }
+    if (clips.any((clip) => clip.uri != null && clip.uri == _playback.uri)) {
+      await _stopPreview();
+    }
+
+    var deleted = 0;
+    String? firstError;
+    for (final clip in clips) {
+      final uri = clip.uri;
+      if (uri == null) {
+        continue;
+      }
+      final response = await _replayChannel.invokeMapMethod<String, Object?>(
+        'deleteRecording',
+        {'uri': uri},
+      );
+      if (response?['ok'] == true) {
+        deleted += 1;
+      } else {
+        firstError ??= response?['error']?.toString() ?? 'delete_failed';
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _platformStatus = firstError == null
+          ? 'Deleted $deleted recordings'
+          : 'Deleted $deleted recordings, error: $firstError';
+    });
+    await _loadRecordings();
+  }
+
   Future<void> _moveClip(ClipItem clip, RecordingGroup? group) async {
     await _runLibraryMutation('moveRecording', {
       'uri': clip.uri,
       'parentUri': clip.parentUri,
       'groupUri': group?.uri,
     });
+  }
+
+  Future<bool> _processClip({
+    required ClipItem clip,
+    required double gainDb,
+    required String format,
+    required int mp3BitrateKbps,
+  }) async {
+    if (defaultTargetPlatform != TargetPlatform.android || clip.uri == null) {
+      return false;
+    }
+    final response = await _replayChannel
+        .invokeMapMethod<String, Object?>('processRecording', {
+          'uri': clip.uri,
+          'parentUri': clip.parentUri,
+          'gainDb': gainDb,
+          'format': format,
+          'mp3BitrateKbps': mp3BitrateKbps,
+        });
+    if (!mounted) {
+      return false;
+    }
+    final ok = response?['ok'] == true;
+    setState(() {
+      _platformStatus = ok
+          ? 'Processed recording: ${response?['name']}'
+          : 'Processing error: ${response?['error']}';
+    });
+    if (ok) {
+      await _loadRecordings();
+    }
+    return ok;
+  }
+
+  Future<Map<String, Object?>> _clearCache() async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return <String, Object?>{'ok': false, 'error': 'unsupported_platform'};
+    }
+    final response = await _replayChannel.invokeMapMethod<String, Object?>(
+      'clearCache',
+    );
+    final result = Map<String, Object?>.from(response ?? const {});
+    if (!mounted) {
+      return result;
+    }
+    final ok = result['ok'] == true;
+    final deletedBytes = result['deletedBytes'];
+    setState(() {
+      _platformStatus = ok
+          ? 'Cache cleared: ${_formatBytes(deletedBytes is int ? deletedBytes : 0)}'
+          : 'Clear cache error: ${result['error']}';
+    });
+    return result;
   }
 
   Future<void> _runLibraryMutation(
@@ -703,15 +807,20 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         onDeleteGroup: _deleteGroup,
         onRenameClip: _renameClip,
         onDeleteClip: _deleteClip,
+        onDeleteClips: _deleteClips,
         onMoveClip: _moveClip,
       ),
-      AppSection.processing => const _ProcessingPage(),
+      AppSection.processing => _ProcessingPage(
+        clips: _clips,
+        onProcess: _processClip,
+      ),
       AppSection.settings => _SettingsPage(
         folderUri: _folderUri,
         sampleRate: _sampleRate,
         bufferSeconds: _bufferSeconds,
         onChooseFolder: _chooseRecordingFolder,
         onUpdateAudioSettings: _updateAudioSettings,
+        onClearCache: _clearCache,
       ),
     };
 
@@ -820,126 +929,115 @@ class _RecorderPageState extends State<_RecorderPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      children: [
-        _Panel(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Icon(
-                    widget.isBuffering ? Icons.graphic_eq : Icons.pause_circle,
-                    color: widget.isBuffering
-                        ? const Color(0xFF1B7F79)
-                        : Colors.orange,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      widget.isBuffering ? '即时回放运行中' : '录制已暂停',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  ),
-                ],
+              Icon(
+                widget.isBuffering ? Icons.graphic_eq : Icons.pause_circle,
+                color: widget.isBuffering
+                    ? const Color(0xFF1B7F79)
+                    : Colors.orange,
               ),
-              const SizedBox(height: 20),
-              ValueListenableBuilder<MeterSnapshot>(
-                valueListenable: widget.meterSnapshot,
-                builder: (context, snapshot, _) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _formatDurationMillis(snapshot.recordedMillis),
-                        style: Theme.of(context).textTheme.headlineMedium
-                            ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              fontFeatures: const [
-                                FontFeature.tabularFigures(),
-                              ],
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        widget.platformStatus,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF52615E),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      LoudnessMeter(
-                        level: snapshot.level,
-                        peakLevel: snapshot.peakLevel,
-                        isRecording: snapshot.running,
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size(152, 56),
-                    ),
-                    onPressed: widget.folderSelected
-                        ? () => widget.onSave(_selectedDuration.seconds)
-                        : null,
-                    icon: const Icon(Icons.save_alt),
-                    label: Text('保存 ${_selectedDuration.label}'),
-                  ),
-                  DropdownMenu<SaveDurationOption>(
-                    initialSelection: _selectedDuration,
-                    width: 168,
-                    leadingIcon: const Icon(Icons.timer_outlined),
-                    inputDecorationTheme: const InputDecorationTheme(
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
-                      constraints: BoxConstraints(minHeight: 56),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.all(Radius.circular(28)),
-                      ),
-                    ),
-                    onSelected: (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      setState(() {
-                        _selectedDuration = value;
-                      });
-                    },
-                    dropdownMenuEntries: [
-                      for (final option in _durations)
-                        DropdownMenuEntry(value: option, label: option.label),
-                    ],
-                  ),
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(112, 56),
-                    ),
-                    onPressed: widget.onToggle,
-                    icon: Icon(
-                      widget.isBuffering ? Icons.pause : Icons.play_arrow,
-                    ),
-                    label: Text(widget.isBuffering ? '暂停' : '继续'),
-                  ),
-                  if (!widget.folderSelected)
-                    OutlinedButton.icon(
-                      onPressed: widget.onChooseFolder,
-                      icon: const Icon(Icons.folder_open),
-                      label: const Text('选择目录'),
-                    ),
-                ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  widget.isBuffering ? '即时回放运行中' : '录制已暂停',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 20),
+          ValueListenableBuilder<MeterSnapshot>(
+            valueListenable: widget.meterSnapshot,
+            builder: (context, snapshot, _) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _formatDurationMillis(snapshot.recordedMillis),
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    widget.platformStatus,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF52615E),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  LoudnessMeter(
+                    level: snapshot.level,
+                    peakLevel: snapshot.peakLevel,
+                    isRecording: snapshot.running,
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              FilledButton.icon(
+                style: FilledButton.styleFrom(minimumSize: const Size(152, 56)),
+                onPressed: widget.folderSelected
+                    ? () => widget.onSave(_selectedDuration.seconds)
+                    : null,
+                icon: const Icon(Icons.save_alt),
+                label: Text('保存 ${_selectedDuration.label}'),
+              ),
+              DropdownMenu<SaveDurationOption>(
+                initialSelection: _selectedDuration,
+                width: 168,
+                leadingIcon: const Icon(Icons.timer_outlined),
+                inputDecorationTheme: const InputDecorationTheme(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                  constraints: BoxConstraints(minHeight: 56),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(28)),
+                  ),
+                ),
+                onSelected: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  setState(() {
+                    _selectedDuration = value;
+                  });
+                },
+                dropdownMenuEntries: [
+                  for (final option in _durations)
+                    DropdownMenuEntry(value: option, label: option.label),
+                ],
+              ),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(112, 56),
+                ),
+                onPressed: widget.onToggle,
+                icon: Icon(widget.isBuffering ? Icons.pause : Icons.play_arrow),
+                label: Text(widget.isBuffering ? '暂停' : '继续'),
+              ),
+              if (!widget.folderSelected)
+                OutlinedButton.icon(
+                  onPressed: widget.onChooseFolder,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('选择目录'),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1143,7 +1241,7 @@ class _LoudnessMeterPainter extends CustomPainter {
   }
 }
 
-class _LibraryPage extends StatelessWidget {
+class _LibraryPage extends StatefulWidget {
   const _LibraryPage({
     required this.groups,
     required this.clips,
@@ -1160,6 +1258,7 @@ class _LibraryPage extends StatelessWidget {
     required this.onDeleteGroup,
     required this.onRenameClip,
     required this.onDeleteClip,
+    required this.onDeleteClips,
     required this.onMoveClip,
   });
 
@@ -1178,8 +1277,14 @@ class _LibraryPage extends StatelessWidget {
   final Future<void> Function(RecordingGroup group) onDeleteGroup;
   final Future<void> Function(ClipItem clip, String name) onRenameClip;
   final Future<void> Function(ClipItem clip) onDeleteClip;
+  final Future<void> Function(List<ClipItem> clips) onDeleteClips;
   final Future<void> Function(ClipItem clip, RecordingGroup? group) onMoveClip;
 
+  @override
+  State<_LibraryPage> createState() => _LibraryPageState();
+}
+
+class _LibraryPageState extends State<_LibraryPage> {
   static const List<double> _speedOptions = [
     0.1,
     0.25,
@@ -1194,6 +1299,43 @@ class _LibraryPage extends StatelessWidget {
     8,
     16,
   ];
+
+  final Set<String> _selectedClipUris = {};
+  bool _isEditing = false;
+
+  List<RecordingGroup> get groups => widget.groups;
+  List<ClipItem> get clips => widget.clips;
+  PlaybackSnapshot get playback => widget.playback;
+  Future<void> Function() get onRefresh => widget.onRefresh;
+  Future<void> Function(ClipItem clip) get onPlay => widget.onPlay;
+  Future<void> Function() get onPause => widget.onPause;
+  Future<void> Function() get onResume => widget.onResume;
+  Future<void> Function() get onStop => widget.onStop;
+  Future<void> Function(int positionMs) get onSeek => widget.onSeek;
+  Future<void> Function(double speed) get onSpeedChanged =>
+      widget.onSpeedChanged;
+  Future<void> Function(String name) get onCreateGroup => widget.onCreateGroup;
+  Future<void> Function(RecordingGroup group, String name) get onRenameGroup =>
+      widget.onRenameGroup;
+  Future<void> Function(RecordingGroup group) get onDeleteGroup =>
+      widget.onDeleteGroup;
+  Future<void> Function(ClipItem clip, String name) get onRenameClip =>
+      widget.onRenameClip;
+  Future<void> Function(ClipItem clip) get onDeleteClip => widget.onDeleteClip;
+  Future<void> Function(List<ClipItem> clips) get onDeleteClips =>
+      widget.onDeleteClips;
+  Future<void> Function(ClipItem clip, RecordingGroup? group) get onMoveClip =>
+      widget.onMoveClip;
+
+  @override
+  void didUpdateWidget(covariant _LibraryPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final liveUris = clips.map((clip) => clip.uri).whereType<String>().toSet();
+    _selectedClipUris.removeWhere((uri) => !liveUris.contains(uri));
+    if (_selectedClipUris.isEmpty && liveUris.isEmpty && _isEditing) {
+      _isEditing = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1222,21 +1364,48 @@ class _LibraryPage extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
+              if (_isEditing)
+                Text(
+                  '${_selectedClipUris.length}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              if (_isEditing)
+                IconButton(
+                  tooltip: '全选',
+                  onPressed: clips.isEmpty ? null : _selectAll,
+                  icon: const Icon(Icons.select_all),
+                )
+              else
+                IconButton(
+                  tooltip: '新建分组',
+                  onPressed: () => _createGroup(context),
+                  icon: const Icon(Icons.create_new_folder),
+                ),
+              if (_isEditing)
+                IconButton(
+                  tooltip: '删除所选',
+                  onPressed: _selectedClipUris.isEmpty
+                      ? null
+                      : () => _deleteSelectedClips(context),
+                  icon: const Icon(Icons.delete_outline),
+                )
+              else
+                IconButton(
+                  tooltip: '停止预览',
+                  onPressed: onStop,
+                  icon: const Icon(Icons.stop),
+                ),
               IconButton(
-                tooltip: '新建分组',
-                onPressed: () => _createGroup(context),
-                icon: const Icon(Icons.create_new_folder),
+                tooltip: _isEditing ? '完成' : '编辑',
+                onPressed: _toggleEditing,
+                icon: Icon(_isEditing ? Icons.done : Icons.edit),
               ),
-              IconButton(
-                tooltip: '停止预览',
-                onPressed: onStop,
-                icon: const Icon(Icons.stop),
-              ),
-              IconButton(
-                tooltip: '刷新',
-                onPressed: onRefresh,
-                icon: const Icon(Icons.refresh),
-              ),
+              if (!_isEditing)
+                IconButton(
+                  tooltip: '刷新',
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh),
+                ),
             ],
           ),
           const SizedBox(height: 16),
@@ -1298,15 +1467,25 @@ class _LibraryPage extends StatelessWidget {
 
   Widget _buildClipTile(BuildContext context, ClipItem clip) {
     final isActive = clip.uri != null && clip.uri == playback.uri;
+    final uri = clip.uri;
+    final selected = uri != null && _selectedClipUris.contains(uri);
     return Column(
       children: [
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: IconButton.filledTonal(
-            tooltip: '预览',
-            onPressed: () => onPlay(clip),
-            icon: const Icon(Icons.play_arrow),
-          ),
+          onTap: _isEditing ? () => _toggleClipSelection(clip) : null,
+          leading: _isEditing
+              ? Checkbox(
+                  value: selected,
+                  onChanged: uri == null
+                      ? null
+                      : (_) => _toggleClipSelection(clip),
+                )
+              : IconButton.filledTonal(
+                  tooltip: '预览',
+                  onPressed: () => onPlay(clip),
+                  icon: const Icon(Icons.play_arrow),
+                ),
           title: Text(clip.name),
           subtitle: Text(
             [
@@ -1316,29 +1495,31 @@ class _LibraryPage extends StatelessWidget {
               _formatTime(clip.createdAt),
             ].join(' · '),
           ),
-          trailing: PopupMenuButton<String>(
-            tooltip: '录音操作',
-            onSelected: (value) {
-              switch (value) {
-                case 'rename':
-                  _renameClip(context, clip);
-                  break;
-                case 'move':
-                  _moveClip(context, clip);
-                  break;
-                case 'delete':
-                  _deleteClip(context, clip);
-                  break;
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'rename', child: Text('重命名')),
-              PopupMenuItem(value: 'move', child: Text('移动到分组')),
-              PopupMenuItem(value: 'delete', child: Text('删除')),
-            ],
-          ),
+          trailing: _isEditing
+              ? null
+              : PopupMenuButton<String>(
+                  tooltip: '录音操作',
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'rename':
+                        _renameClip(context, clip);
+                        break;
+                      case 'move':
+                        _moveClip(context, clip);
+                        break;
+                      case 'delete':
+                        _deleteClip(context, clip);
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(value: 'rename', child: Text('重命名')),
+                    PopupMenuItem(value: 'move', child: Text('移动到分组')),
+                    PopupMenuItem(value: 'delete', child: Text('删除')),
+                  ],
+                ),
         ),
-        if (isActive)
+        if (isActive && !_isEditing)
           _PlaybackControls(
             playback: playback,
             speedOptions: _speedOptions,
@@ -1351,6 +1532,69 @@ class _LibraryPage extends StatelessWidget {
         const Divider(height: 1),
       ],
     );
+  }
+
+  void _toggleEditing() {
+    setState(() {
+      _isEditing = !_isEditing;
+      if (!_isEditing) {
+        _selectedClipUris.clear();
+      }
+    });
+  }
+
+  void _toggleClipSelection(ClipItem clip) {
+    final uri = clip.uri;
+    if (uri == null) {
+      return;
+    }
+    setState(() {
+      if (_selectedClipUris.contains(uri)) {
+        _selectedClipUris.remove(uri);
+      } else {
+        _selectedClipUris.add(uri);
+      }
+    });
+  }
+
+  void _selectAll() {
+    final selectableUris = clips.map((clip) => clip.uri).whereType<String>();
+    setState(() {
+      if (_selectedClipUris.length == selectableUris.length) {
+        _selectedClipUris.clear();
+      } else {
+        _selectedClipUris
+          ..clear()
+          ..addAll(selectableUris);
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedClips(BuildContext context) async {
+    final selectedClips = clips
+        .where(
+          (clip) => clip.uri != null && _selectedClipUris.contains(clip.uri),
+        )
+        .toList();
+    if (selectedClips.isEmpty) {
+      return;
+    }
+    final confirmed = await _confirm(
+      context,
+      title: '批量删除录音',
+      message: '确定删除选中的 ${selectedClips.length} 个录音？此操作不可撤销。',
+    );
+    if (!confirmed || !context.mounted) {
+      return;
+    }
+    await onDeleteClips(selectedClips);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedClipUris.clear();
+      _isEditing = false;
+    });
   }
 
   Future<void> _createGroup(BuildContext context) async {
@@ -1670,35 +1914,224 @@ class _PlaybackControlsState extends State<_PlaybackControls> {
   }
 }
 
-class _ProcessingPage extends StatelessWidget {
-  const _ProcessingPage();
+class _ProcessingPage extends StatefulWidget {
+  const _ProcessingPage({required this.clips, required this.onProcess});
+
+  final List<ClipItem> clips;
+  final Future<bool> Function({
+    required ClipItem clip,
+    required double gainDb,
+    required String format,
+    required int mp3BitrateKbps,
+  })
+  onProcess;
+
+  @override
+  State<_ProcessingPage> createState() => _ProcessingPageState();
+}
+
+class _ProcessingPageState extends State<_ProcessingPage> {
+  static const List<int> _bitrateOptions = [64, 96, 128, 160, 192, 256, 320];
+
+  String? _selectedUri;
+  double _gainDb = 0;
+  String _format = 'mp3';
+  int _mp3BitrateKbps = 128;
+  bool _processing = false;
+  String? _message;
+
+  ClipItem? get _selectedClip {
+    for (final clip in widget.clips) {
+      if (clip.uri == _selectedUri) {
+        return clip;
+      }
+    }
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedUri = widget.clips
+        .map((clip) => clip.uri)
+        .whereType<String>()
+        .firstOrNull;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProcessingPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final uris = widget.clips.map((clip) => clip.uri).whereType<String>();
+    if (_selectedUri == null || !uris.contains(_selectedUri)) {
+      _selectedUri = uris.isEmpty ? null : uris.first;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('音频处理', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-          const ListTile(
-            leading: Icon(Icons.volume_up),
-            title: Text('增益与响度'),
-            trailing: Icon(Icons.lock_clock),
+    return ListView(
+      children: [
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('音频处理', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedUri,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '源录音',
+                  prefixIcon: Icon(Icons.library_music),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: [
+                  for (final clip in widget.clips)
+                    if (clip.uri != null)
+                      DropdownMenuItem(
+                        value: clip.uri,
+                        child: Text(clip.name, overflow: TextOverflow.ellipsis),
+                      ),
+                ],
+                selectedItemBuilder: (context) => [
+                  for (final clip in widget.clips)
+                    if (clip.uri != null)
+                      Text(
+                        clip.name,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                ],
+                onChanged: _processing
+                    ? null
+                    : (value) => setState(() => _selectedUri = value),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  const Icon(Icons.volume_up),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      '增益 ${_gainDb >= 0 ? '+' : ''}${_gainDb.toStringAsFixed(1)} dB',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: _gainDb,
+                min: -24,
+                max: 24,
+                divisions: 96,
+                label:
+                    '${_gainDb >= 0 ? '+' : ''}${_gainDb.toStringAsFixed(1)} dB',
+                onChanged: _processing
+                    ? null
+                    : (value) => setState(() => _gainDb = value),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _format,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '输出格式',
+                  prefixIcon: Icon(Icons.audio_file),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'mp3', child: Text('MP3')),
+                  DropdownMenuItem(value: 'wav', child: Text('WAV')),
+                ],
+                onChanged: _processing
+                    ? null
+                    : (value) => setState(() => _format = value ?? 'mp3'),
+              ),
+              if (_format == 'mp3') ...[
+                const SizedBox(height: 14),
+                DropdownButtonFormField<int>(
+                  initialValue: _mp3BitrateKbps,
+                  decoration: const InputDecoration(
+                    labelText: 'MP3 码率',
+                    prefixIcon: Icon(Icons.speed),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(8)),
+                    ),
+                  ),
+                  items: [
+                    for (final value in _bitrateOptions)
+                      DropdownMenuItem(
+                        value: value,
+                        child: Text('$value kbps'),
+                      ),
+                  ],
+                  onChanged: _processing
+                      ? null
+                      : (value) => setState(
+                          () => _mp3BitrateKbps = value ?? _mp3BitrateKbps,
+                        ),
+                ),
+              ],
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: _processing || _selectedClip == null
+                    ? null
+                    : _processSelectedClip,
+                icon: _processing
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_fix_high),
+                label: Text(_processing ? '处理中' : '生成处理副本'),
+              ),
+              if (_message != null) ...[
+                const SizedBox(height: 12),
+                Text(_message!, style: Theme.of(context).textTheme.bodyMedium),
+              ],
+            ],
           ),
-          const ListTile(
-            leading: Icon(Icons.content_cut),
-            title: Text('裁剪'),
-            trailing: Icon(Icons.lock_clock),
-          ),
-          const ListTile(
-            leading: Icon(Icons.auto_fix_high),
-            title: Text('降噪'),
-            trailing: Icon(Icons.lock_clock),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
+  }
+
+  Future<void> _processSelectedClip() async {
+    final clip = _selectedClip;
+    if (clip == null) {
+      return;
+    }
+    setState(() {
+      _processing = true;
+      _message = null;
+    });
+    final ok = await widget.onProcess(
+      clip: clip,
+      gainDb: _gainDb,
+      format: _format,
+      mp3BitrateKbps: _mp3BitrateKbps,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _processing = false;
+      _message = ok ? '处理完成，已生成新的录音文件。' : '处理失败，请检查 FFmpeg 或源文件。';
+    });
+  }
+}
+
+extension _FirstOrNullExtension<T> on Iterable<T> {
+  T? get firstOrNull {
+    final iterator = this.iterator;
+    if (!iterator.moveNext()) {
+      return null;
+    }
+    return iterator.current;
   }
 }
 
@@ -1709,6 +2142,7 @@ class _SettingsPage extends StatelessWidget {
     required this.bufferSeconds,
     required this.onChooseFolder,
     required this.onUpdateAudioSettings,
+    required this.onClearCache,
   });
 
   static const List<int> _sampleRateOptions = [8000, 16000, 24000, 48000];
@@ -1720,90 +2154,132 @@ class _SettingsPage extends StatelessWidget {
   final Future<void> Function() onChooseFolder;
   final Future<void> Function({int? sampleRate, int? bufferSeconds})
   onUpdateAudioSettings;
+  final Future<Map<String, Object?>> Function() onClearCache;
 
   @override
   Widget build(BuildContext context) {
     final estimatedPcmBytes = sampleRate * bufferSeconds * 2;
 
-    return _Panel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('设置', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.folder),
-            title: const Text('录音目录'),
-            subtitle: Text(folderUri ?? '未选择'),
-            trailing: FilledButton.icon(
-              onPressed: onChooseFolder,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('更改'),
-            ),
-          ),
-          const Divider(height: 28),
-          Text('录制设置', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 14),
-          DropdownButtonFormField<int>(
-            initialValue: sampleRate,
-            decoration: const InputDecoration(
-              labelText: 'Android 采样率',
-              prefixIcon: Icon(Icons.graphic_eq),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.all(Radius.circular(8)),
-              ),
-            ),
-            items: [
-              for (final value in _sampleRateOptions)
-                DropdownMenuItem(
-                  value: value,
-                  child: Text(_formatHertz(value)),
+    return ListView(
+      children: [
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('设置', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 16),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.folder),
+                title: const Text('录音目录'),
+                subtitle: Text(folderUri ?? '未选择'),
+                trailing: FilledButton.icon(
+                  onPressed: onChooseFolder,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('更改'),
                 ),
-            ],
-            onChanged: (value) {
-              if (value == null) {
-                return;
-              }
-              onUpdateAudioSettings(sampleRate: value);
-            },
-          ),
-          const SizedBox(height: 14),
-          DropdownButtonFormField<int>(
-            initialValue: bufferSeconds,
-            decoration: const InputDecoration(
-              labelText: '缓存时长',
-              prefixIcon: Icon(Icons.schedule),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.all(Radius.circular(8)),
               ),
-            ),
-            items: [
-              for (final value in _bufferSecondOptions)
-                DropdownMenuItem(
-                  value: value,
-                  child: Text(_formatLongDuration(value)),
+              const Divider(height: 28),
+              Text('录制设置', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<int>(
+                initialValue: sampleRate,
+                decoration: const InputDecoration(
+                  labelText: 'Android 采样率',
+                  prefixIcon: Icon(Icons.graphic_eq),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
                 ),
+                items: [
+                  for (final value in _sampleRateOptions)
+                    DropdownMenuItem(
+                      value: value,
+                      child: Text(_formatHertz(value)),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  onUpdateAudioSettings(sampleRate: value);
+                },
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<int>(
+                initialValue: bufferSeconds,
+                decoration: const InputDecoration(
+                  labelText: '缓存时长',
+                  prefixIcon: Icon(Icons.schedule),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: [
+                  for (final value in _bufferSecondOptions)
+                    DropdownMenuItem(
+                      value: value,
+                      child: Text(_formatLongDuration(value)),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  onUpdateAudioSettings(bufferSeconds: value);
+                },
+              ),
+              const SizedBox(height: 14),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.memory),
+                title: Text('预计 PCM 缓冲：${_formatBytes(estimatedPcmBytes)}'),
+                subtitle: Text(
+                  '${_formatHertz(sampleRate)} · 单声道 · 16-bit PCM · 录制中修改下次启动生效',
+                ),
+              ),
+              const Divider(height: 28),
+              Text('缓存', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.cleaning_services),
+                title: const Text('清除缓存'),
+                subtitle: const Text('清理临时导出、处理缓存；录制中会保留当前回放缓存'),
+                trailing: IconButton.filledTonal(
+                  tooltip: '清除',
+                  onPressed: () => _confirmClearCache(context),
+                  icon: const Icon(Icons.delete_sweep),
+                ),
+              ),
             ],
-            onChanged: (value) {
-              if (value == null) {
-                return;
-              }
-              onUpdateAudioSettings(bufferSeconds: value);
-            },
           ),
-          const SizedBox(height: 14),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.memory),
-            title: Text('预计 PCM 缓冲：${_formatBytes(estimatedPcmBytes)}'),
-            subtitle: Text(
-              '${_formatHertz(sampleRate)} · 单声道 · 16-bit PCM · 录制中修改下次启动生效',
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
+  }
+
+  Future<void> _confirmClearCache(BuildContext context) async {
+    final confirmed = await _confirm(
+      context,
+      title: '清除缓存',
+      message: '确定清除 EchoClip 的临时缓存？此操作不会删除已保存录音。',
+    );
+    if (!confirmed || !context.mounted) {
+      return;
+    }
+    final result = await onClearCache();
+    if (!context.mounted) {
+      return;
+    }
+    final deletedBytes = result['deletedBytes'];
+    final activePreserved = result['activeReplayCachePreserved'] == true;
+    final message = result['ok'] == true
+        ? '已清理 ${_formatBytes(deletedBytes is int ? deletedBytes : 0)}${activePreserved ? '，当前回放缓存已保留' : ''}'
+        : '清理失败：${result['error']}';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 

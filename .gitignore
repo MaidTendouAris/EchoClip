@@ -17,6 +17,7 @@ demo_output/
 **/.pub-cache/
 **/.pub/
 **/coverage/
+.dart-tool-home/
 
 # Packaged artifacts
 *.apk
@@ -26,6 +27,13 @@ demo_output/
 
 # Local tool downloads
 tools/gradle/
+tools/downloads/
+tools/msys64/
+third_party/ffmpeg/src/
+third_party/ffmpeg/build/
+third_party/ffmpeg/prebuilt/
+third_party/ffmpeg/out/
+third_party/ffmpeg/versions.local.txt
 
 # OS/editor noise
 .DS_Store

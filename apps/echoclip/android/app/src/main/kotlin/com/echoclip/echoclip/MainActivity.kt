@@ -1,6 +1,7 @@
 package com.echoclip.echoclip
 
 import android.Manifest
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
@@ -12,6 +13,11 @@ import android.provider.DocumentsContract
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
     private val channelName = "com.echoclip/replay_service"
@@ -55,6 +61,21 @@ class MainActivity : FlutterActivity() {
                             ),
                         )
                     }
+                    "getExportSettings" -> {
+                        result.success(RecordingStorage.getExportSettings(this).toMap())
+                    }
+                    "setExportSettings" -> {
+                        val current = RecordingStorage.getExportSettings(this)
+                        val format = call.argument<String>("format") ?: current.format
+                        val mp3BitrateKbps =
+                            call.argument<Int>("mp3BitrateKbps") ?: current.mp3BitrateKbps
+                        val settings = RecordingStorage.setExportSettings(
+                            this,
+                            format,
+                            mp3BitrateKbps,
+                        )
+                        result.success(settings.toMap())
+                    }
                     "chooseRecordingFolder" -> chooseRecordingFolder(result)
                     "listRecordings" -> result.success(listRecordings())
                     "listGroups" -> result.success(listGroups())
@@ -74,7 +95,7 @@ class MainActivity : FlutterActivity() {
                     "renameRecording" -> {
                         val uri = call.argument<String>("uri")
                         val name = call.argument<String>("name")
-                        result.success(renameDocument(uri, name, allowWavExtension = true))
+                        result.success(renameRecording(uri, name))
                     }
                     "deleteRecording" -> {
                         val uri = call.argument<String>("uri")
@@ -86,6 +107,18 @@ class MainActivity : FlutterActivity() {
                         val groupUri = call.argument<String>("groupUri")
                         result.success(moveRecording(uri, parentUri, groupUri))
                     }
+                    "processRecording" -> {
+                        result.success(
+                            processRecording(
+                                uriString = call.argument<String>("uri"),
+                                parentUriString = call.argument<String>("parentUri"),
+                                gainDb = call.argument<Double>("gainDb") ?: 0.0,
+                                format = call.argument<String>("format"),
+                                mp3BitrateKbps = call.argument<Int>("mp3BitrateKbps"),
+                            ),
+                        )
+                    }
+                    "clearCache" -> result.success(clearCache())
                     "playRecording" -> {
                         val uri = call.argument<String>("uri")
                         if (uri == null) {
@@ -125,6 +158,20 @@ class MainActivity : FlutterActivity() {
                                 result.success(service.saveLatestClip(seconds))
                             }
                         }
+                        "cancelSaveJob" -> {
+                            val jobId = call.argument<Number>("jobId")?.toLong() ?: 0L
+                            val service = ReplayForegroundService.activeService
+                            if (service == null) {
+                                result.success(
+                                    mapOf(
+                                        "canceled" to false,
+                                        "error" to "service_not_running",
+                                    ),
+                                )
+                            } else {
+                                result.success(service.cancelSaveJob(jobId))
+                            }
+                        }
                         "stopReplay" -> {
                             stopService(Intent(this, ReplayForegroundService::class.java))
                             result.success(mapOf("running" to false))
@@ -162,6 +209,10 @@ class MainActivity : FlutterActivity() {
                                 "saved" to false,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
+                            "cancelSaveJob" -> mapOf(
+                                "canceled" to false,
+                                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
+                            )
                             "startReplay", "stopReplay", "getReplayStatus" -> mapOf(
                                 "running" to false,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
@@ -182,6 +233,11 @@ class MainActivity : FlutterActivity() {
                                 "bufferSeconds" to 1_800,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
+                            "getExportSettings", "setExportSettings" -> mapOf(
+                                "format" to "mp3",
+                                "mp3BitrateKbps" to 128,
+                                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
+                            )
                             "playRecording", "pausePreview", "resumePreview",
                             "stopPreview", "seekPreview", "setPlaybackSpeed",
                             "getPlaybackStatus" -> mapOf(
@@ -190,7 +246,8 @@ class MainActivity : FlutterActivity() {
                             )
                             "listGroups" -> emptyList<Map<String, Any?>>()
                             "createGroup", "renameGroup", "deleteGroup",
-                            "renameRecording", "deleteRecording", "moveRecording" -> mapOf(
+                            "renameRecording", "deleteRecording", "moveRecording",
+                            "processRecording", "clearCache" -> mapOf(
                                 "ok" to false,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
@@ -387,7 +444,7 @@ class MainActivity : FlutterActivity() {
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                     continue
                 }
-                if (!name.endsWith(".wav", ignoreCase = true) && mime != "audio/wav") {
+                if (!isSupportedRecording(name, mime)) {
                     continue
                 }
 
@@ -479,6 +536,22 @@ class MainActivity : FlutterActivity() {
         return mapOf("ok" to true, "name" to cleanName, "uri" to renamed.toString())
     }
 
+    private fun renameRecording(uriString: String?, name: String?): Map<String, Any?> {
+        val uri = uriString?.let(Uri::parse)
+            ?: return mapOf("ok" to false, "error" to "missing_uri")
+        val cleanName = sanitizeDocumentName(name, allowWavExtension = false)
+            ?: return mapOf("ok" to false, "error" to "invalid_name")
+        val currentExtension = recordingExtension(queryDisplayName(uri)) ?: ".mp3"
+        val finalName = if (recordingExtension(cleanName) == null) {
+            "$cleanName$currentExtension"
+        } else {
+            cleanName
+        }
+        val renamed = DocumentsContract.renameDocument(contentResolver, uri, finalName)
+            ?: return mapOf("ok" to false, "error" to "rename_failed")
+        return mapOf("ok" to true, "name" to finalName, "uri" to renamed.toString())
+    }
+
     private fun deleteDocument(uriString: String?): Map<String, Any?> {
         val uri = uriString?.let(Uri::parse)
             ?: return mapOf("ok" to false, "error" to "missing_uri")
@@ -510,6 +583,124 @@ class MainActivity : FlutterActivity() {
         return mapOf("ok" to true, "uri" to moved.toString())
     }
 
+    private fun processRecording(
+        uriString: String?,
+        parentUriString: String?,
+        gainDb: Double,
+        format: String?,
+        mp3BitrateKbps: Int?,
+    ): Map<String, Any?> {
+        val sourceUri = uriString?.let(Uri::parse)
+            ?: return mapOf("ok" to false, "error" to "missing_uri")
+        val folderUri = RecordingStorage.getRecordingFolderUri(this)
+            ?: return mapOf("ok" to false, "error" to "recording_folder_not_selected")
+        val ffmpegPath = resolveFfmpegPath()
+            ?: return mapOf("ok" to false, "error" to "ffmpeg_unavailable")
+
+        val cleanFormat = when (format?.lowercase(Locale.US)) {
+            "wav" -> "wav"
+            else -> "mp3"
+        }
+        val bitrate = sanitizeMp3Bitrate(mp3BitrateKbps ?: 128)
+        val sourceName = queryDisplayName(sourceUri) ?: "recording"
+        val sourceExtension = recordingExtension(sourceName)?.removePrefix(".") ?: "audio"
+        val timestamp = System.currentTimeMillis()
+        val inputFile = File(cacheDir, "echoclip-process-input-$timestamp.$sourceExtension")
+        val outputFile = File(cacheDir, "echoclip-process-output-$timestamp.$cleanFormat")
+
+        return try {
+            copyDocumentToFile(contentResolver, sourceUri, inputFile)
+            val gainLabel = gainDbLabel(gainDb)
+            val command = mutableListOf(
+                ffmpegPath,
+                "-y",
+                "-hide_banner",
+                "-nostdin",
+                "-i",
+                inputFile.absolutePath,
+                "-af",
+                "volume=${gainDb}dB",
+                "-vn",
+            )
+            if (cleanFormat == "wav") {
+                command += listOf("-c:a", "pcm_s16le")
+            } else {
+                command += listOf("-c:a", "libmp3lame", "-b:a", "${bitrate}k")
+            }
+            command += outputFile.absolutePath
+
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+            val ffmpegOutput = process.inputStream.bufferedReader().use { it.readText() }
+            val finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return mapOf("ok" to false, "error" to "ffmpeg_timeout")
+            }
+            if (process.exitValue() != 0 || !outputFile.exists() || outputFile.length() == 0L) {
+                return mapOf(
+                    "ok" to false,
+                    "error" to "ffmpeg_failed:${ffmpegOutput.takeLast(240)}",
+                )
+            }
+
+            val parentUri = parentUriString?.let(Uri::parse) ?: rootDocumentUri(folderUri)
+            val outputName = processedRecordingName(sourceName, gainLabel, cleanFormat)
+            val outputUri = DocumentsContract.createDocument(
+                contentResolver,
+                parentUri,
+                mimeTypeForAudioFormat(cleanFormat),
+                outputName,
+            ) ?: return mapOf("ok" to false, "error" to "create_document_failed")
+
+            try {
+                copyFileToDocument(contentResolver, outputFile, outputUri)
+            } catch (error: Exception) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
+                return mapOf(
+                    "ok" to false,
+                    "error" to "write_failed:${error.javaClass.simpleName}:${error.message}",
+                )
+            }
+
+            mapOf(
+                "ok" to true,
+                "name" to outputName,
+                "uri" to outputUri.toString(),
+                "size" to outputFile.length(),
+                "format" to cleanFormat,
+                "gainDb" to gainDb,
+            )
+        } catch (error: Exception) {
+            mapOf(
+                "ok" to false,
+                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
+            )
+        } finally {
+            inputFile.delete()
+            outputFile.delete()
+        }
+    }
+
+    private fun clearCache(): Map<String, Any?> {
+        var deletedBytes = 0L
+        deletedBytes += deleteChildren(cacheDir)
+        val serviceRunning = ReplayForegroundService.activeService != null
+        var replayCacheCleared = false
+        if (!serviceRunning) {
+            val runtimeTemp = File(filesDir, "echoclip-runtime/.echoclip/temp")
+            deletedBytes += deleteChildren(runtimeTemp)
+            replayCacheCleared = true
+        }
+        return mapOf(
+            "ok" to true,
+            "deletedBytes" to deletedBytes,
+            "replayCacheCleared" to replayCacheCleared,
+            "activeReplayCachePreserved" to serviceRunning,
+        )
+    }
+
     private fun rootDocumentUri(treeUri: Uri): Uri {
         return DocumentsContract.buildDocumentUriUsingTree(
             treeUri,
@@ -530,6 +721,110 @@ class MainActivity : FlutterActivity() {
         } else {
             cleaned
         }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        contentResolver.query(
+            uri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                return cursor.getString(
+                    cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                )
+            }
+        }
+        return null
+    }
+
+    private fun isSupportedRecording(name: String, mime: String): Boolean {
+        return recordingExtension(name) != null ||
+            mime.lowercase(Locale.US) in SUPPORTED_RECORDING_MIME_TYPES
+    }
+
+    private fun recordingExtension(name: String?): String? {
+        val lower = name?.lowercase(Locale.US) ?: return null
+        return SUPPORTED_RECORDING_EXTENSIONS.firstOrNull { lower.endsWith(it) }
+    }
+
+    private fun copyDocumentToFile(resolver: ContentResolver, sourceUri: Uri, target: File) {
+        resolver.openInputStream(sourceUri).use { input ->
+            requireNotNull(input) { "Unable to open source document" }
+            FileOutputStream(target).use { output ->
+                input.copyTo(output, PROCESS_COPY_BUFFER_BYTES)
+            }
+        }
+    }
+
+    private fun copyFileToDocument(resolver: ContentResolver, source: File, targetUri: Uri) {
+        resolver.openOutputStream(targetUri, "w").use { output ->
+            requireNotNull(output) { "Unable to open output document" }
+            FileInputStream(source).use { input ->
+                input.copyTo(output, PROCESS_COPY_BUFFER_BYTES)
+            }
+        }
+    }
+
+    private fun resolveFfmpegPath(): String? {
+        val candidates = listOf(
+            File(applicationInfo.nativeLibraryDir, "libffmpeg.so"),
+            File(filesDir, "ffmpeg"),
+            File(filesDir, "ffmpeg/ffmpeg"),
+            File(applicationInfo.nativeLibraryDir, "ffmpeg"),
+        )
+        return candidates.firstOrNull { it.exists() && it.canExecute() }?.absolutePath
+    }
+
+    private fun processedRecordingName(sourceName: String, gainLabel: String, format: String): String {
+        val baseName = sourceName.substringBeforeLast('.', sourceName)
+        val cleanBase = sanitizeDocumentName(baseName, allowWavExtension = false) ?: "recording"
+        return "$cleanBase-processed-$gainLabel.$format"
+    }
+
+    private fun gainDbLabel(gainDb: Double): String {
+        val rounded = (gainDb * 10).toInt() / 10.0
+        val prefix = if (rounded >= 0) "plus" else "minus"
+        val value = kotlin.math.abs(rounded)
+            .toString()
+            .replace(".", "p")
+        return "${prefix}${value}db"
+    }
+
+    private fun mimeTypeForAudioFormat(format: String): String {
+        return when (format.lowercase(Locale.US)) {
+            "wav" -> "audio/wav"
+            else -> "audio/mpeg"
+        }
+    }
+
+    private fun sanitizeMp3Bitrate(value: Int): Int {
+        val allowed = listOf(64, 96, 128, 160, 192, 256, 320)
+        return allowed.minBy { kotlin.math.abs(it - value) }
+    }
+
+    private fun deleteChildren(directory: File): Long {
+        if (!directory.exists() || !directory.isDirectory) {
+            return 0L
+        }
+        var deletedBytes = 0L
+        directory.listFiles()?.forEach { child ->
+            deletedBytes += fileSize(child)
+            child.deleteRecursively()
+        }
+        return deletedBytes
+    }
+
+    private fun fileSize(file: File): Long {
+        if (!file.exists()) {
+            return 0L
+        }
+        if (file.isFile) {
+            return file.length()
+        }
+        return file.listFiles()?.sumOf { fileSize(it) } ?: 0L
     }
 
     private fun playRecording(uriString: String, speed: Float): Map<String, Any?> {
@@ -650,5 +945,24 @@ class MainActivity : FlutterActivity() {
         private const val REQUEST_RECORDING_FOLDER = 4103
         private const val MIN_PLAYBACK_SPEED = 0.1f
         private const val MAX_PLAYBACK_SPEED = 16.0f
+        private const val PROCESS_TIMEOUT_SECONDS = 180L
+        private const val PROCESS_COPY_BUFFER_BYTES = 64 * 1024
+        private val SUPPORTED_RECORDING_EXTENSIONS = listOf(
+            ".mp3",
+            ".wav",
+            ".m4a",
+            ".aac",
+            ".flac",
+        )
+        private val SUPPORTED_RECORDING_MIME_TYPES = setOf(
+            "audio/mpeg",
+            "audio/mp3",
+            "audio/wav",
+            "audio/x-wav",
+            "audio/mp4",
+            "audio/aac",
+            "audio/flac",
+            "audio/x-flac",
+        )
     }
 }

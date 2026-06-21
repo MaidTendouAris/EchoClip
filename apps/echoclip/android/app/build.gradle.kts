@@ -33,6 +33,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        jniLibs {
+            // FFmpeg is packaged as jniLibs/<abi>/libffmpeg.so but executed as a
+            // process, so it must be extracted into applicationInfo.nativeLibraryDir.
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter {

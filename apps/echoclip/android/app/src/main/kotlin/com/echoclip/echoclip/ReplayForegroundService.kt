@@ -16,14 +16,14 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.content.pm.ServiceInfo
 import android.provider.DocumentsContract
-import java.io.BufferedOutputStream
-import java.io.DataOutputStream
+import java.io.File
+import java.io.FileInputStream
 import java.util.ArrayDeque
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -33,7 +33,10 @@ class ReplayForegroundService : Service() {
     private var sampleRate: Int = 16_000
     private var bufferSeconds: Int = 1_800
     private var audioRecord: AudioRecord? = null
+    private lateinit var runtimeDir: File
     private var captureThread: Thread? = null
+    private val saveJobs = ConcurrentHashMap<Long, SaveJobState>()
+    private val nextSaveJobId = AtomicLong(1)
     private val levelLock = Any()
     private val levelFrames = ArrayDeque<LevelFrame>(MAX_LEVEL_FRAMES)
     private var levelSquareSum = 0.0
@@ -52,7 +55,22 @@ class ReplayForegroundService : Service() {
         val settings = RecordingStorage.getAudioSettings(this)
         sampleRate = settings.sampleRate
         bufferSeconds = settings.bufferSeconds
-        rustBufferHandle = RustAudioCore.create(sampleRate, CHANNELS, bufferSeconds)
+        runtimeDir = File(filesDir, "echoclip-runtime").apply { mkdirs() }
+        cleanupStaleCacheExports()
+        if (filesDir.usableSpace < MIN_INTERNAL_FREE_BYTES) {
+            captureError = "storage_low:${filesDir.usableSpace}"
+        }
+        rustBufferHandle = RustAudioCore.startRecorder(
+            tempDir = runtimeDir.absolutePath,
+            sampleRate = sampleRate,
+            channels = CHANNELS,
+            segmentSeconds = SEGMENT_SECONDS,
+            maxReplaySeconds = bufferSeconds,
+            queueCapacityChunks = QUEUE_CAPACITY_CHUNKS,
+        )
+        if (rustBufferHandle == 0L) {
+            captureError = "rust_recorder_start_failed"
+        }
         createNotificationChannel()
     }
 
@@ -85,6 +103,7 @@ class ReplayForegroundService : Service() {
     override fun onDestroy() {
         stopCapture()
         if (rustBufferHandle != 0L) {
+            RustAudioCore.stopRecorder(rustBufferHandle)
             RustAudioCore.destroy(rustBufferHandle)
             rustBufferHandle = 0
         }
@@ -212,8 +231,16 @@ class ReplayForegroundService : Service() {
 
     private fun pushSamples(samples: ShortArray, count: Int) {
         if (rustBufferHandle != 0L) {
-            RustAudioCore.push(rustBufferHandle, samples, count)
-            capturedSampleCount += count.toLong()
+            when (RustAudioCore.pushPcm(rustBufferHandle, samples, count)) {
+                PushCode.OK -> capturedSampleCount += count.toLong()
+                PushCode.QUEUE_FULL -> captureError = "pcm_queue_full"
+                PushCode.WORKER_STOPPED -> captureError = "pcm_worker_stopped"
+                PushCode.INVALID_HANDLE -> captureError = "pcm_invalid_handle"
+                PushCode.PANIC_CAUGHT -> captureError = "pcm_panic_caught"
+                PushCode.QUEUE_CLOSED -> captureError = "pcm_queue_closed"
+                PushCode.OTHER_ERROR -> captureError = "pcm_push_failed"
+                else -> captureError = "pcm_unknown_push_code"
+            }
         }
     }
 
@@ -236,10 +263,7 @@ class ReplayForegroundService : Service() {
             )
         }
 
-        val clip = RustAudioCore.latest(rustBufferHandle, seconds)
-        val sampleCount = clip.size
-
-        if (sampleCount <= 0) {
+        if (RustAudioCore.availableMillis(rustBufferHandle) <= 0L) {
             return mapOf(
                 "saved" to false,
                 "error" to "buffer_empty",
@@ -251,38 +275,32 @@ class ReplayForegroundService : Service() {
                 "saved" to false,
                 "error" to "recording_folder_not_selected",
             )
+        val exportSettings = RecordingStorage.getExportSettings(this)
 
+        cleanupFinishedSaveJobs()
+        val saveJobId = nextSaveJobId.getAndIncrement()
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val displayName = "echoclip-$timestamp-${sampleCount / sampleRate}s.wav"
-        val parentDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
-            folderUri,
-            DocumentsContract.getTreeDocumentId(folderUri),
+        val state = SaveJobState(
+            id = saveJobId,
+            requestedSeconds = seconds,
+            state = "Queued",
+            createdMs = SystemClock.elapsedRealtime(),
         )
-        val outputUri = DocumentsContract.createDocument(
-            contentResolver,
-            parentDocumentUri,
-            "audio/wav",
-            displayName,
-        ) ?: return mapOf(
-            "saved" to false,
-            "error" to "create_document_failed",
-        )
-
-        try {
-            writeWav(contentResolver, outputUri, clip)
-        } catch (error: Exception) {
-            runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
-            return mapOf(
-                "saved" to false,
-                "error" to "write_failed:${error.javaClass.simpleName}:${error.message}",
-            )
+        saveJobs[saveJobId] = state
+        Thread {
+            runSaveJob(state, seconds, folderUri, timestamp, exportSettings)
+        }.apply {
+            name = "EchoClipSaveJob-$saveJobId"
+            isDaemon = true
+            start()
         }
 
         return mapOf(
             "saved" to true,
-            "name" to displayName,
-            "uri" to outputUri.toString(),
-            "durationSeconds" to sampleCount / sampleRate,
+            "pending" to true,
+            "jobId" to saveJobId,
+            "state" to state.state,
+            "format" to exportSettings.format,
         )
     }
 
@@ -296,20 +314,62 @@ class ReplayForegroundService : Service() {
                 )
             }
         }
+        val rustStatus = if (rustBufferHandle == 0L) {
+            RustRecorderStatus(lastError = captureError)
+        } else {
+            RustAudioCore.status(rustBufferHandle)
+        }
+        val exportSettings = RecordingStorage.getExportSettings(this)
+        val ffmpegPath = resolveFfmpegPath()
         return mapOf(
             "running" to isRunning,
-            "availableSeconds" to if (rustBufferHandle == 0L) {
-                0
-            } else {
-                RustAudioCore.availableSeconds(rustBufferHandle)
-            },
-            "availableMillis" to availableMillis(),
+            "availableSeconds" to (rustStatus.availableMillis / 1_000L).toInt(),
+            "availableMillis" to rustStatus.availableMillis,
             "levelFrames" to framesCopy,
             "levelClockMs" to clockMs,
-            "captureError" to captureError,
+            "captureError" to (captureError ?: rustStatus.lastError),
             "backend" to RustAudioCore.backendName(),
             "sampleRate" to sampleRate,
             "bufferSeconds" to bufferSeconds,
+            "segmentCount" to rustStatus.segmentCount,
+            "queuedChunks" to rustStatus.queuedChunks,
+            "droppedChunks" to rustStatus.droppedChunks,
+            "activeExports" to rustStatus.activeExports,
+            "rustExportJobs" to rustStatus.exportJobs.map { it.toMap() },
+            "saveJobs" to saveJobs.values.sortedByDescending { it.id }.take(MAX_SAVE_JOB_HISTORY)
+                .map { it.toMap() },
+            "tempBytes" to rustStatus.tempBytes,
+            "estimatedMaxPcmBytes" to rustStatus.estimatedMaxPcmBytes,
+            "internalUsableBytes" to filesDir.usableSpace,
+            "internalTotalBytes" to filesDir.totalSpace,
+            "oldestRetainedMillis" to rustStatus.oldestRetainedMillis,
+            "latestSampleMillis" to rustStatus.latestSampleMillis,
+            "writerLastFlushUnixMillis" to rustStatus.writerLastFlushUnixMillis,
+            "recovered" to rustStatus.recovered,
+            "recoveryWarning" to rustStatus.recoveryWarning,
+            "exportFormat" to exportSettings.format,
+            "mp3BitrateKbps" to exportSettings.mp3BitrateKbps,
+            "ffmpegAvailable" to (ffmpegPath != null),
+            "ffmpegPath" to ffmpegPath,
+        )
+    }
+
+    fun cancelSaveJob(jobId: Long): Map<String, Any?> {
+        val job = saveJobs[jobId] ?: return mapOf(
+            "canceled" to false,
+            "error" to "save_job_not_found",
+        )
+        job.cancelRequested = true
+        if (job.rustJobId != 0L) {
+            RustAudioCore.cancelExport(rustBufferHandle, job.rustJobId)
+        }
+        if (job.state == "Queued" || job.state == "Exporting" || job.state == "CopyingToSaf") {
+            job.state = "Canceling"
+        }
+        return mapOf(
+            "canceled" to true,
+            "jobId" to jobId,
+            "state" to job.state,
         )
     }
 
@@ -341,12 +401,10 @@ class ReplayForegroundService : Service() {
     }
 
     private fun availableMillis(): Long {
-        val millis = if (sampleRate <= 0) {
-            0L
-        } else {
-            capturedSampleCount * 1_000L / sampleRate
+        if (rustBufferHandle != 0L) {
+            return RustAudioCore.availableMillis(rustBufferHandle)
         }
-        return min(millis, bufferSeconds * 1_000L)
+        return 0L
     }
 
     private fun updateLevels(samples: ShortArray, count: Int) {
@@ -388,27 +446,174 @@ class ReplayForegroundService : Service() {
         levelFrames.addLast(LevelFrame(smoothed, SystemClock.elapsedRealtime()))
     }
 
-    private fun writeWav(resolver: ContentResolver, outputUri: Uri, samples: ShortArray) {
+    private fun waitForExport(job: SaveJobState, jobId: Long): RustExportStatus {
+        var last = RustAudioCore.exportStatus(rustBufferHandle, jobId)
+        val start = SystemClock.elapsedRealtime()
+        while (last.state == "Pending" || last.state == "Running") {
+            if (job.cancelRequested) {
+                RustAudioCore.cancelExport(rustBufferHandle, jobId)
+                return last.copy(state = "Canceled", error = "canceled")
+            }
+            if (SystemClock.elapsedRealtime() - start > EXPORT_WAIT_TIMEOUT_MILLIS) {
+                return last.copy(state = "Failed", error = "export_timeout")
+            }
+            Thread.sleep(EXPORT_POLL_INTERVAL_MILLIS)
+            last = RustAudioCore.exportStatus(rustBufferHandle, jobId)
+        }
+        return last
+    }
+
+    private fun runSaveJob(
+        state: SaveJobState,
+        seconds: Int,
+        folderUri: Uri,
+        timestamp: String,
+        exportSettings: ExportSettings,
+    ) {
+        var cacheFile: File? = null
+        try {
+            if (state.cancelRequested) {
+                state.cancel()
+                return
+            }
+            state.state = "Exporting"
+            state.format = exportSettings.format
+            val extension = exportSettings.format
+            cacheFile = File(cacheDir, "echoclip-export-$timestamp-${seconds}s.$extension")
+            val rustJobId = RustAudioCore.saveLatestToCache(
+                rustBufferHandle,
+                seconds,
+                cacheFile.absolutePath,
+                exportSettings.format,
+                exportSettings.mp3BitrateKbps,
+                resolveFfmpegPath(),
+            )
+            state.rustJobId = rustJobId
+            if (rustJobId == 0L) {
+                state.fail("export_job_start_failed")
+                return
+            }
+            if (state.cancelRequested) {
+                RustAudioCore.cancelExport(rustBufferHandle, rustJobId)
+            }
+
+            val exportStatus = waitForExport(state, rustJobId)
+            if (exportStatus.state == "Canceled" || state.cancelRequested) {
+                state.cancel()
+                return
+            }
+            if (exportStatus.state != "Finished") {
+                state.fail("export_failed:${exportStatus.error ?: exportStatus.state}")
+                return
+            }
+
+            state.samplesWritten = exportStatus.samplesWritten
+            state.durationSeconds = if (sampleRate <= 0) {
+                0L
+            } else {
+                exportStatus.samplesWritten / sampleRate
+            }
+            state.state = "CopyingToSaf"
+            state.copyTotalBytes = cacheFile.length()
+            if (state.cancelRequested) {
+                state.cancel()
+                return
+            }
+
+            val displayName = "echoclip-$timestamp-${state.durationSeconds}s.$extension"
+            state.name = displayName
+            val parentDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+                folderUri,
+                DocumentsContract.getTreeDocumentId(folderUri),
+            )
+            val outputUri = DocumentsContract.createDocument(
+                contentResolver,
+                parentDocumentUri,
+                mimeTypeForExport(exportSettings.format),
+                displayName,
+            ) ?: run {
+                state.fail("create_document_failed")
+                return
+            }
+
+            try {
+                copyFileToDocument(contentResolver, outputUri, cacheFile, state)
+            } catch (error: Exception) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
+                if (state.cancelRequested) {
+                    state.cancel()
+                    return
+                }
+                state.fail("write_failed:${error.javaClass.simpleName}:${error.message}")
+                return
+            }
+
+            state.uri = outputUri.toString()
+            state.state = "Finished"
+            state.finishedMs = SystemClock.elapsedRealtime()
+        } catch (error: Exception) {
+            state.fail("exception:${error.javaClass.simpleName}:${error.message}")
+        } finally {
+            cacheFile?.delete()
+        }
+    }
+
+    private fun copyFileToDocument(
+        resolver: ContentResolver,
+        outputUri: Uri,
+        source: File,
+        state: SaveJobState,
+    ) {
         val output = resolver.openOutputStream(outputUri, "w")
             ?: throw IllegalStateException("Unable to open output document")
-        DataOutputStream(BufferedOutputStream(output)).use { stream ->
-            val dataSize = samples.size * BYTES_PER_SAMPLE
-            stream.writeBytes("RIFF")
-            stream.writeIntLe(36 + dataSize)
-            stream.writeBytes("WAVE")
-            stream.writeBytes("fmt ")
-            stream.writeIntLe(16)
-            stream.writeShortLe(1)
-            stream.writeShortLe(CHANNELS)
-            stream.writeIntLe(sampleRate)
-            stream.writeIntLe(sampleRate * CHANNELS * BYTES_PER_SAMPLE)
-            stream.writeShortLe(CHANNELS * BYTES_PER_SAMPLE)
-            stream.writeShortLe(16)
-            stream.writeBytes("data")
-            stream.writeIntLe(dataSize)
-            for (sample in samples) {
-                stream.writeShortLe(sample.toInt())
+        output.use { destination ->
+            FileInputStream(source).use { input ->
+                val buffer = ByteArray(COPY_BUFFER_BYTES)
+                while (true) {
+                    if (state.cancelRequested) {
+                        throw InterruptedException("copy_canceled")
+                    }
+                    val read = input.read(buffer)
+                    if (read < 0) {
+                        break
+                    }
+                    destination.write(buffer, 0, read)
+                    state.copyBytesWritten += read.toLong()
+                }
             }
+        }
+    }
+
+    private fun cleanupStaleCacheExports() {
+        cacheDir.listFiles()
+            ?.filter { it.name.startsWith("echoclip-export-") }
+            ?.forEach { it.delete() }
+    }
+
+    private fun resolveFfmpegPath(): String? {
+        val candidates = listOf(
+            File(applicationInfo.nativeLibraryDir, "libffmpeg.so"),
+            File(filesDir, "ffmpeg"),
+            File(filesDir, "ffmpeg/ffmpeg"),
+            File(applicationInfo.nativeLibraryDir, "ffmpeg"),
+        )
+        return candidates.firstOrNull { it.exists() && it.canExecute() }?.absolutePath
+    }
+
+    private fun mimeTypeForExport(format: String): String {
+        return when (format.lowercase(Locale.US)) {
+            "wav" -> "audio/wav"
+            else -> "audio/mpeg"
+        }
+    }
+
+    private fun cleanupFinishedSaveJobs() {
+        val finished = saveJobs.values
+            .filter { it.state == "Finished" || it.state == "Failed" || it.state == "Canceled" }
+            .sortedByDescending { it.finishedMs ?: it.createdMs }
+            .drop(MAX_SAVE_JOB_HISTORY)
+        for (job in finished) {
+            saveJobs.remove(job.id)
         }
     }
 
@@ -419,10 +624,17 @@ class ReplayForegroundService : Service() {
         private const val NOTIFICATION_ID = 4102
         private const val CHANNELS = 1
         private const val BYTES_PER_SAMPLE = 2
+        private const val SEGMENT_SECONDS = 60
+        private const val QUEUE_CAPACITY_CHUNKS = 32
         private const val LEVEL_FRAME_MILLIS = 50
         private const val LEVEL_STALE_MILLIS = 300
         private const val PEAK_HOLD_MILLIS = 1_600
         private const val MAX_LEVEL_FRAMES = 160
+        private const val EXPORT_POLL_INTERVAL_MILLIS = 100L
+        private const val EXPORT_WAIT_TIMEOUT_MILLIS = 10 * 60 * 1_000L
+        private const val MIN_INTERNAL_FREE_BYTES = 256L * 1024L * 1024L
+        private const val MAX_SAVE_JOB_HISTORY = 32
+        private const val COPY_BUFFER_BYTES = 256 * 1024
 
         @Volatile
         var isRunning: Boolean = false
@@ -437,10 +649,77 @@ private data class LevelFrame(
     val timestampMs: Long,
 )
 
-private fun DataOutputStream.writeIntLe(value: Int) {
-    write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array())
-}
+private class SaveJobState(
+    val id: Long,
+    val requestedSeconds: Int,
+    @Volatile var state: String,
+    val createdMs: Long,
+) {
+    @Volatile
+    var rustJobId: Long = 0L
 
-private fun DataOutputStream.writeShortLe(value: Int) {
-    write(ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(value.toShort()).array())
+    @Volatile
+    var format: String = "mp3"
+
+    @Volatile
+    var name: String? = null
+
+    @Volatile
+    var uri: String? = null
+
+    @Volatile
+    var durationSeconds: Long = 0L
+
+    @Volatile
+    var samplesWritten: Long = 0L
+
+    @Volatile
+    var copyBytesWritten: Long = 0L
+
+    @Volatile
+    var copyTotalBytes: Long = 0L
+
+    @Volatile
+    var cancelRequested: Boolean = false
+
+    @Volatile
+    var error: String? = null
+
+    @Volatile
+    var finishedMs: Long? = null
+
+    fun fail(message: String) {
+        error = message
+        state = "Failed"
+        finishedMs = SystemClock.elapsedRealtime()
+    }
+
+    fun cancel() {
+        error = "canceled"
+        state = "Canceled"
+        finishedMs = SystemClock.elapsedRealtime()
+    }
+
+    fun toMap(): Map<String, Any?> = mapOf(
+        "id" to id,
+        "rustJobId" to rustJobId,
+        "requestedSeconds" to requestedSeconds,
+        "format" to format,
+        "state" to state,
+        "name" to name,
+        "uri" to uri,
+        "durationSeconds" to durationSeconds,
+        "samplesWritten" to samplesWritten,
+        "copyBytesWritten" to copyBytesWritten,
+        "copyTotalBytes" to copyTotalBytes,
+        "progress" to if (copyTotalBytes > 0L) {
+            copyBytesWritten.toDouble() / copyTotalBytes.toDouble()
+        } else {
+            null
+        },
+        "cancelRequested" to cancelRequested,
+        "error" to error,
+        "createdMs" to createdMs,
+        "finishedMs" to finishedMs,
+    )
 }
