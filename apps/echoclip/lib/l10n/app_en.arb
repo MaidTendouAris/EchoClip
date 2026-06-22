@@ -1,0 +1,310 @@
+{
+  "@@locale": "en",
+  "appTitle": "EchoClip",
+  "navHome": "Home",
+  "navLibrary": "Recordings",
+  "navProcessing": "Processing",
+  "navSettings": "Settings",
+  "replayRunning": "Instant replay running",
+  "recordingPaused": "Recording paused",
+  "currentRecordingDuration": "This recording",
+  "totalRecordedDuration": "Total buffered",
+  "recordingStartedAt": "Started {time}",
+  "@recordingStartedAt": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "lastRecordingStartedAt": "Last recording {time}",
+  "@lastRecordingStartedAt": {
+    "placeholders": {
+      "time": {}
+    }
+  },
+  "recordingStatusNormal": "Recording normally",
+  "recordingStatusPaused": "Recording is paused",
+  "recordingStatusPermissionLost": "Microphone permission is unavailable. Check Android permissions.",
+  "recordingStatusStorageLow": "Internal storage is low. Free some space before recording.",
+  "recordingStatusAudioUnavailable": "Microphone initialization failed. Another app may be using it.",
+  "recordingStatusQueueBusy": "Audio buffer is busy. Recording may drop a little audio.",
+  "recordingStatusBackendUnavailable": "Audio backend is not ready. Restart recording if this persists.",
+  "recordingStatusCaptureIssue": "Audio capture encountered a problem.",
+  "recordingStatusWithDetail": "{message} · Details: {detail}",
+  "@recordingStatusWithDetail": {
+    "placeholders": {
+      "message": {},
+      "detail": {}
+    }
+  },
+  "saveClip": "Save {duration}",
+  "@saveClip": {
+    "placeholders": {
+      "duration": {}
+    }
+  },
+  "pause": "Pause",
+  "resume": "Resume",
+  "chooseFolder": "Choose folder",
+  "secondsShort": "{seconds}s",
+  "@secondsShort": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "minutesShort": "{minutes} min",
+  "@minutesShort": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "hoursShort": "{hours} hr",
+  "@hoursShort": {
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      }
+    }
+  },
+  "hoursMinutesShort": "{hours} hr {minutes} min",
+  "@hoursMinutesShort": {
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      },
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "recentDurationName": "Last {duration}",
+  "@recentDurationName": {
+    "placeholders": {
+      "duration": {}
+    }
+  },
+  "loudnessTitle": "Live loudness",
+  "silenceLabel": "Silence",
+  "microphoneInputLabel": "Mic input",
+  "notRecordingLabel": "Not recording",
+  "peakLabel": "Peak",
+  "libraryTitle": "Recordings",
+  "unGrouped": "Ungrouped",
+  "emptyRecordings": "No recordings",
+  "selectAll": "Select all",
+  "newGroup": "New group",
+  "deleteSelected": "Delete selected",
+  "stopPreview": "Stop preview",
+  "done": "Done",
+  "edit": "Edit",
+  "refresh": "Refresh",
+  "groupActions": "Group actions",
+  "renameGroup": "Rename group",
+  "deleteGroup": "Delete group",
+  "preview": "Preview",
+  "recordingActions": "Recording actions",
+  "rename": "Rename",
+  "moveToGroup": "Move to group",
+  "delete": "Delete",
+  "batchDeleteRecordings": "Delete recordings",
+  "confirmBatchDeleteRecordings": "Delete {count} selected recordings? This cannot be undone.",
+  "@confirmBatchDeleteRecordings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "groupName": "Group name",
+  "confirmDeleteGroup": "Delete this group and every recording inside it? This cannot be undone.",
+  "renameRecording": "Rename recording",
+  "deleteRecording": "Delete recording",
+  "fileName": "File name",
+  "confirmDeleteRecording": "Delete {name}? This cannot be undone.",
+  "@confirmDeleteRecording": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "cancel": "Cancel",
+  "ok": "OK",
+  "stop": "Stop",
+  "processingTitle": "Audio processing",
+  "sourceRecording": "Source recording",
+  "gainDb": "Gain {gain} dB",
+  "@gainDb": {
+    "placeholders": {
+      "gain": {}
+    }
+  },
+  "outputFormat": "Output format",
+  "mp3Bitrate": "MP3 bitrate",
+  "processing": "Processing",
+  "generateProcessedCopy": "Generate processed copy",
+  "processingComplete": "Processing complete. A new recording file was created.",
+  "processingFailed": "Processing failed. Check FFmpeg or the source file.",
+  "settingsTitle": "Settings",
+  "recordingFolder": "Recording folder",
+  "notSelected": "Not selected",
+  "change": "Change",
+  "recordingSettings": "Recording settings",
+  "languageSettings": "Language",
+  "appLanguage": "App language",
+  "followSystemLanguage": "Follow system",
+  "englishLanguage": "English",
+  "chineseLanguage": "简体中文",
+  "androidSampleRate": "Android sample rate",
+  "bufferDuration": "Buffer duration",
+  "bufferDurationMinutes": "Buffer duration (minutes)",
+  "bufferDurationHelper": "1 to 1440 minutes",
+  "minutesUnit": "min",
+  "estimatedPcmBuffer": "Estimated PCM buffer: {size}",
+  "@estimatedPcmBuffer": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "pcmBufferSubtitle": "{sampleRate} · mono · 16-bit PCM · changes while recording apply on next start",
+  "@pcmBufferSubtitle": {
+    "placeholders": {
+      "sampleRate": {}
+    }
+  },
+  "cacheTitle": "Cache",
+  "currentCacheSize": "Current cache size: {size}",
+  "@currentCacheSize": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "clearCache": "Clear cache",
+  "clearCacheSubtitle": "Clear temporary export and processing cache; the active replay cache is preserved while recording",
+  "confirmClearCache": "Clear EchoClip temporary cache? Saved recordings will not be deleted.",
+  "cacheCleared": "Cleared {size}",
+  "@cacheCleared": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "cacheClearedActivePreserved": "Cleared {size}; active replay cache preserved",
+  "@cacheClearedActivePreserved": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "cacheClearFailed": "Clear failed: {error}",
+  "@cacheClearFailed": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "aboutProject": "Project",
+  "githubRepository": "GitHub repository",
+  "githubRepositorySubtitle": "View source code and documentation",
+  "licenseTitle": "License",
+  "licenseSubtitle": "GPL-3.0-only",
+  "issueFeedback": "Report an issue",
+  "issueFeedbackSubtitle": "Open GitHub Issues",
+  "windowsDemoMode": "Windows demo mode",
+  "recordingSettingsSaved": "Recording settings saved",
+  "settingsSavedNextRecording": "Settings saved for next recording",
+  "recordingFolderReady": "Recording folder ready",
+  "folderSetupError": "Folder setup error: {error}",
+  "@folderSetupError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "captureError": "Capture error: {error}",
+  "@captureError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "androidServiceRunning": "Android foreground service running · {backend}",
+  "@androidServiceRunning": {
+    "placeholders": {
+      "backend": {}
+    }
+  },
+  "androidServiceStopped": "Android service stopped · {backend}",
+  "@androidServiceStopped": {
+    "placeholders": {
+      "backend": {}
+    }
+  },
+  "androidServiceError": "Android service error: {error}",
+  "@androidServiceError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "androidSaveError": "Android save error: {error}",
+  "@androidSaveError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "androidSaveStarted": "Android save started",
+  "androidClipSaved": "Android clip saved",
+  "previewPlaying": "Preview playing",
+  "previewError": "Preview error: {error}",
+  "@previewError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "previewStopped": "Preview stopped",
+  "deletedRecordings": "Deleted {count} recordings",
+  "@deletedRecordings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "deletedRecordingsWithError": "Deleted {count} recordings, error: {error}",
+  "@deletedRecordingsWithError": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "error": {}
+    }
+  },
+  "processedRecording": "Processed recording: {name}",
+  "@processedRecording": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "processingStatusError": "Processing error: {error}",
+  "@processingStatusError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "cacheClearedStatus": "Cache cleared: {size}",
+  "@cacheClearedStatus": {
+    "placeholders": {
+      "size": {}
+    }
+  },
+  "clearCacheStatusError": "Clear cache error: {error}",
+  "@clearCacheStatusError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "libraryUpdated": "Library updated",
+  "libraryError": "Library error: {error}",
+  "@libraryError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "unnamedGroup": "Unnamed group"
+}

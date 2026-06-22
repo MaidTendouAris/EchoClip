@@ -6,7 +6,7 @@ void main() {
     await tester.pumpWidget(const EchoClipApp());
 
     expect(find.text('EchoClip'), findsOneWidget);
-    expect(find.text('保存 30 秒'), findsOneWidget);
+    expect(find.text('Save 30s'), findsOneWidget);
     expect(find.byType(LoudnessMeter), findsOneWidget);
   });
 }

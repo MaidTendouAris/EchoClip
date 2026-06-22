@@ -48,6 +48,8 @@ class ReplayForegroundService : Service() {
     private var captureError: String? = null
     @Volatile
     private var shouldCapture = false
+    @Volatile
+    private var sessionStartedUnixMillis: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -84,6 +86,10 @@ class ReplayForegroundService : Service() {
             return START_STICKY
         }
 
+        if (!isRunning) {
+            sessionStartedUnixMillis = System.currentTimeMillis()
+            RecordingStorage.setLastSessionStartedUnixMillis(this, sessionStartedUnixMillis)
+        }
         isRunning = true
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -103,6 +109,10 @@ class ReplayForegroundService : Service() {
     override fun onDestroy() {
         stopCapture()
         if (rustBufferHandle != 0L) {
+            RecordingStorage.setLastAvailableMillis(
+                this,
+                RustAudioCore.availableMillis(rustBufferHandle),
+            )
             RustAudioCore.stopRecorder(rustBufferHandle)
             RustAudioCore.destroy(rustBufferHandle)
             rustBufferHandle = 0
@@ -325,6 +335,7 @@ class ReplayForegroundService : Service() {
             "running" to isRunning,
             "availableSeconds" to (rustStatus.availableMillis / 1_000L).toInt(),
             "availableMillis" to rustStatus.availableMillis,
+            "sessionStartedUnixMillis" to if (isRunning) sessionStartedUnixMillis else 0L,
             "levelFrames" to framesCopy,
             "levelClockMs" to clockMs,
             "captureError" to (captureError ?: rustStatus.lastError),
@@ -394,6 +405,7 @@ class ReplayForegroundService : Service() {
         return mapOf(
             "running" to isRunning,
             "availableMillis" to availableMillis(),
+            "sessionStartedUnixMillis" to if (isRunning) sessionStartedUnixMillis else 0L,
             "level" to levels.first.toDouble(),
             "peakLevel" to levels.second.toDouble(),
             "captureError" to captureError,

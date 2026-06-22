@@ -5,18 +5,111 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'l10n/app_localizations.dart';
+
 void main() {
   runApp(const EchoClipApp());
 }
 
-class EchoClipApp extends StatelessWidget {
+enum UiLanguageMode {
+  system,
+  english,
+  chinese;
+
+  String get storageValue {
+    return switch (this) {
+      UiLanguageMode.system => 'system',
+      UiLanguageMode.english => 'en',
+      UiLanguageMode.chinese => 'zh',
+    };
+  }
+
+  Locale? get locale {
+    return switch (this) {
+      UiLanguageMode.system => null,
+      UiLanguageMode.english => const Locale('en'),
+      UiLanguageMode.chinese => const Locale('zh'),
+    };
+  }
+
+  static UiLanguageMode fromStorageValue(String? value) {
+    return switch (value) {
+      'en' => UiLanguageMode.english,
+      'zh' => UiLanguageMode.chinese,
+      _ => UiLanguageMode.system,
+    };
+  }
+}
+
+class EchoClipApp extends StatefulWidget {
   const EchoClipApp({super.key});
+
+  @override
+  State<EchoClipApp> createState() => _EchoClipAppState();
+}
+
+class _EchoClipAppState extends State<EchoClipApp> {
+  static const MethodChannel _replayChannel = MethodChannel(
+    'com.echoclip/replay_service',
+  );
+
+  UiLanguageMode _languageMode = UiLanguageMode.system;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadLanguageMode());
+  }
+
+  Future<void> _loadLanguageMode() async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final response = await _replayChannel.invokeMapMethod<String, Object?>(
+      'getUiLanguageMode',
+    );
+    if (!mounted || response == null) {
+      return;
+    }
+    setState(() {
+      _languageMode = UiLanguageMode.fromStorageValue(
+        response['mode']?.toString(),
+      );
+    });
+  }
+
+  Future<void> _setLanguageMode(UiLanguageMode mode) async {
+    setState(() {
+      _languageMode = mode;
+    });
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final response = await _replayChannel.invokeMapMethod<String, Object?>(
+      'setUiLanguageMode',
+      {'mode': mode.storageValue},
+    );
+    if (!mounted || response == null) {
+      return;
+    }
+    final applied = UiLanguageMode.fromStorageValue(
+      response['mode']?.toString(),
+    );
+    if (applied != _languageMode) {
+      setState(() {
+        _languageMode = applied;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'EchoClip',
+      onGenerateTitle: (context) => context.l10n.appTitle,
       debugShowCheckedModeBanner: false,
+      locale: _languageMode.locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF1B7F79),
@@ -32,25 +125,40 @@ class EchoClipApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const EchoClipHome(),
+      home: EchoClipHome(
+        languageMode: _languageMode,
+        onLanguageModeChanged: _setLanguageMode,
+      ),
     );
   }
 }
 
 enum AppSection {
-  recorder(Icons.home_outlined, '主页'),
-  library(Icons.library_music, '已保存录音'),
-  processing(Icons.equalizer, '音频处理'),
-  settings(Icons.tune, '设置');
+  recorder(Icons.home_outlined),
+  library(Icons.library_music),
+  processing(Icons.equalizer),
+  settings(Icons.tune);
 
-  const AppSection(this.icon, this.label);
+  const AppSection(this.icon);
 
   final IconData icon;
-  final String label;
 }
 
+extension _L10nContext on BuildContext {
+  AppLocalizations get l10n => AppLocalizations.of(this)!;
+}
+
+final DateTime _epochDateTime = DateTime.fromMillisecondsSinceEpoch(0);
+
 class EchoClipHome extends StatefulWidget {
-  const EchoClipHome({super.key});
+  const EchoClipHome({
+    super.key,
+    required this.languageMode,
+    required this.onLanguageModeChanged,
+  });
+
+  final UiLanguageMode languageMode;
+  final Future<void> Function(UiLanguageMode mode) onLanguageModeChanged;
 
   @override
   State<EchoClipHome> createState() => _EchoClipHomeState();
@@ -70,6 +178,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
   String? _folderUri;
   int _sampleRate = 16000;
   int _bufferSeconds = 1800;
+  int _cacheBytes = 0;
   String _platformStatus = defaultTargetPlatform == TargetPlatform.android
       ? 'Android service stopped'
       : 'Windows demo mode';
@@ -80,6 +189,12 @@ class _EchoClipHomeState extends State<EchoClipHome> {
           recordedMillis: defaultTargetPlatform == TargetPlatform.android
               ? 0
               : 42000,
+          sessionRecordedMillis: defaultTargetPlatform == TargetPlatform.android
+              ? 0
+              : 42000,
+          sessionStartedAt: defaultTargetPlatform == TargetPlatform.android
+              ? _epochDateTime
+              : DateTime.now().subtract(const Duration(seconds: 42)),
           level: 0,
           peakLevel: 0,
         ),
@@ -122,6 +237,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
 
     await _refreshRecordingFolder(promptIfMissing: true);
     await _loadAudioSettings();
+    await _loadCacheStatus();
     await _loadRecordings();
     await _refreshReplayStatus();
   }
@@ -172,6 +288,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
 
     final applied = response['applied'] == true;
+    final l10n = context.l10n;
     setState(() {
       _sampleRate = response['sampleRate'] is int
           ? response['sampleRate'] as int
@@ -180,8 +297,8 @@ class _EchoClipHomeState extends State<EchoClipHome> {
           ? response['bufferSeconds'] as int
           : nextBufferSeconds;
       _platformStatus = applied
-          ? 'Recording settings saved'
-          : 'Settings saved for next recording';
+          ? l10n.recordingSettingsSaved
+          : l10n.settingsSavedNextRecording;
     });
   }
 
@@ -212,7 +329,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     if (defaultTargetPlatform != TargetPlatform.android) {
       setState(() {
         _folderSelected = true;
-        _platformStatus = 'Windows demo mode';
+        _platformStatus = context.l10n.windowsDemoMode;
       });
       return;
     }
@@ -225,12 +342,13 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
 
     final selected = response?['selected'] == true;
+    final l10n = context.l10n;
     setState(() {
       _folderSelected = selected;
       _folderUri = response?['uri']?.toString();
       _platformStatus = selected
-          ? 'Recording folder ready'
-          : 'Folder setup error: ${response?['error']}';
+          ? l10n.recordingFolderReady
+          : l10n.folderSetupError(response?['error']?.toString() ?? 'unknown');
     });
     if (selected) {
       await _loadRecordings();
@@ -253,33 +371,44 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       final running = response?['running'] == true;
       final availableSeconds = response?['availableSeconds'];
       final availableMillis = response?['availableMillis'];
-      final backend = response?['backend'];
       final captureError = response?['captureError'];
       final sampleRate = response?['sampleRate'];
       final bufferSeconds = response?['bufferSeconds'];
+      final cacheBytes = response?['cacheBytes'];
+      final sessionStartedUnixMillis = response?['sessionStartedUnixMillis'];
+      final l10n = context.l10n;
       setState(() {
         _isBuffering = running;
-        _platformStatus = captureError != null
-            ? 'Capture error: $captureError'
-            : running
-            ? 'Android foreground service running · ${backend ?? 'unknown'}'
-            : 'Android service stopped · ${backend ?? 'unknown'}';
+        _platformStatus = _friendlyRecordingStatus(
+          l10n: l10n,
+          running: running,
+          rawError: captureError?.toString(),
+        );
         if (sampleRate is int) {
           _sampleRate = sampleRate;
         }
         if (bufferSeconds is int) {
           _bufferSeconds = bufferSeconds;
         }
+        if (cacheBytes is int) {
+          _cacheBytes = cacheBytes;
+        }
       });
       if (availableMillis is num) {
         _updateMeterSnapshot(
           running: running,
           recordedMillis: availableMillis.toInt(),
+          sessionStartedUnixMillis: sessionStartedUnixMillis is num
+              ? sessionStartedUnixMillis.toInt()
+              : null,
         );
       } else if (availableSeconds is int) {
         _updateMeterSnapshot(
           running: running,
           recordedMillis: availableSeconds * 1000,
+          sessionStartedUnixMillis: sessionStartedUnixMillis is num
+              ? sessionStartedUnixMillis.toInt()
+              : null,
         );
       }
     } on PlatformException catch (error) {
@@ -287,7 +416,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         return;
       }
       setState(() {
-        _platformStatus = 'Android service error: ${error.code}';
+        _platformStatus = context.l10n.androidServiceError(error.code);
       });
     }
   }
@@ -301,6 +430,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
             snapshot.recordedMillis + 50,
             _bufferSeconds * 1000,
           ),
+          sessionRecordedMillis: snapshot.sessionRecordedMillis + 50,
         );
       }
       unawaited(_refreshMeterStatus());
@@ -320,6 +450,8 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     _meterSnapshot.value = MeterSnapshot(
       running: true,
       recordedMillis: snapshot.recordedMillis + 50,
+      sessionRecordedMillis: snapshot.sessionRecordedMillis + 50,
+      sessionStartedAt: snapshot.sessionStartedAt,
       level: pulse,
       peakLevel: math.max(snapshot.peakLevel * 0.94, pulse),
     );
@@ -341,6 +473,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
 
       final running = response['running'] == true;
       final recordedMillis = response['availableMillis'];
+      final sessionStartedUnixMillis = response['sessionStartedUnixMillis'];
       final level = response['level'];
       final peakLevel = response['peakLevel'];
       _updateMeterSnapshot(
@@ -348,6 +481,9 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         recordedMillis: recordedMillis is num
             ? recordedMillis.toInt()
             : _meterSnapshot.value.recordedMillis,
+        sessionStartedUnixMillis: sessionStartedUnixMillis is num
+            ? sessionStartedUnixMillis.toInt()
+            : null,
         level: level is num ? level.toDouble() : _meterSnapshot.value.level,
         peakLevel: peakLevel is num
             ? peakLevel.toDouble()
@@ -368,13 +504,40 @@ class _EchoClipHomeState extends State<EchoClipHome> {
   void _updateMeterSnapshot({
     required bool running,
     required int recordedMillis,
+    int? sessionStartedUnixMillis,
     double? level,
     double? peakLevel,
   }) {
     final previous = _meterSnapshot.value;
+    final displayRecordedMillis =
+        !running && recordedMillis == 0 && previous.recordedMillis > 0
+        ? previous.recordedMillis
+        : recordedMillis;
+    final providedSessionStartedAt = sessionStartedUnixMillis == null
+        ? null
+        : sessionStartedUnixMillis > 0
+        ? DateTime.fromMillisecondsSinceEpoch(sessionStartedUnixMillis)
+        : _epochDateTime;
+    final sessionStartedAt = running
+        ? providedSessionStartedAt ??
+              previous.sessionStartedAt ??
+              DateTime.now().subtract(
+                Duration(milliseconds: displayRecordedMillis),
+              )
+        : providedSessionStartedAt ??
+              previous.sessionStartedAt ??
+              _epochDateTime;
+    final sessionRecordedMillis = running
+        ? math.max(
+            0,
+            DateTime.now().difference(sessionStartedAt).inMilliseconds,
+          )
+        : 0;
     _meterSnapshot.value = MeterSnapshot(
       running: running,
-      recordedMillis: recordedMillis,
+      recordedMillis: displayRecordedMillis,
+      sessionRecordedMillis: sessionRecordedMillis,
+      sessionStartedAt: sessionStartedAt,
       level: (level ?? previous.level).clamp(0.0, 1.0).toDouble(),
       peakLevel: (peakLevel ?? previous.peakLevel).clamp(0.0, 1.0).toDouble(),
     );
@@ -384,11 +547,14 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     if (defaultTargetPlatform != TargetPlatform.android) {
       setState(() {
         _isBuffering = !_isBuffering;
-        _platformStatus = 'Windows demo mode';
+        _platformStatus = context.l10n.windowsDemoMode;
       });
       _updateMeterSnapshot(
         running: _isBuffering,
         recordedMillis: _meterSnapshot.value.recordedMillis,
+        sessionStartedUnixMillis: _isBuffering
+            ? DateTime.now().millisecondsSinceEpoch
+            : null,
         level: _isBuffering ? _meterSnapshot.value.level : 0,
         peakLevel: _isBuffering ? _meterSnapshot.value.peakLevel : 0,
       );
@@ -413,17 +579,19 @@ class _EchoClipHomeState extends State<EchoClipHome> {
 
       final running = response?['running'] == true;
       final error = response?['error'];
+      final l10n = context.l10n;
       setState(() {
         _isBuffering = running;
         _platformStatus = error == null
-            ? (running
-                  ? 'Android foreground service running'
-                  : 'Android service stopped')
-            : 'Android service error: $error';
+            ? _friendlyRecordingStatus(l10n: l10n, running: running)
+            : l10n.androidServiceError(error.toString());
       });
       _updateMeterSnapshot(
         running: running,
-        recordedMillis: running ? _meterSnapshot.value.recordedMillis : 0,
+        recordedMillis: _meterSnapshot.value.recordedMillis,
+        sessionStartedUnixMillis: running
+            ? DateTime.now().millisecondsSinceEpoch
+            : null,
         level: running ? _meterSnapshot.value.level : 0,
         peakLevel: running ? _meterSnapshot.value.peakLevel : 0,
       );
@@ -432,7 +600,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         return;
       }
       setState(() {
-        _platformStatus = 'Android service error: ${error.code}';
+        _platformStatus = context.l10n.androidServiceError(error.code);
       });
     }
   }
@@ -456,9 +624,12 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         }
 
         final saved = response?['saved'] == true;
+        final l10n = context.l10n;
         if (!saved) {
           setState(() {
-            _platformStatus = 'Android save error: ${response?['error']}';
+            _platformStatus = l10n.androidSaveError(
+              response?['error']?.toString() ?? 'unknown',
+            );
           });
           return;
         }
@@ -466,32 +637,33 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         final pending = response?['pending'] == true;
         setState(() {
           _platformStatus = pending
-              ? 'Android save started'
-              : 'Android clip saved';
+              ? l10n.androidSaveStarted
+              : l10n.androidClipSaved;
         });
         if (pending) {
           unawaited(_reloadRecordingsAfterSave());
         } else {
           await _loadRecordings();
         }
+        await _loadCacheStatus();
         return;
       } on PlatformException catch (error) {
         if (!mounted) {
           return;
         }
         setState(() {
-          _platformStatus = 'Android save error: ${error.code}';
+          _platformStatus = context.l10n.androidSaveError(error.code);
         });
         return;
       }
     }
 
     setState(() {
+      final l10n = context.l10n;
       _clips.insert(
         0,
         ClipItem(
-          name:
-              '最近 ${seconds ~/ 60 > 0 ? '${seconds ~/ 60} 分钟' : '$seconds 秒'}',
+          name: l10n.recentDurationName(_formatDurationLabel(l10n, seconds)),
           durationSeconds: seconds,
           createdAt: DateTime.now(),
           uri: null,
@@ -555,8 +727,10 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     setState(() {
       _playback = PlaybackSnapshot.fromNative(response, fallback: _playback);
       _platformStatus = response?['playing'] == true
-          ? 'Preview playing'
-          : 'Preview error: ${response?['error']}';
+          ? context.l10n.previewPlaying
+          : context.l10n.previewError(
+              response?['error']?.toString() ?? 'unknown',
+            );
     });
   }
 
@@ -596,7 +770,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
     setState(() {
       _playback = PlaybackSnapshot.fromNative(response, fallback: _playback);
-      _platformStatus = 'Preview stopped';
+      _platformStatus = context.l10n.previewStopped;
     });
   }
 
@@ -686,8 +860,8 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
     setState(() {
       _platformStatus = firstError == null
-          ? 'Deleted $deleted recordings'
-          : 'Deleted $deleted recordings, error: $firstError';
+          ? context.l10n.deletedRecordings(deleted)
+          : context.l10n.deletedRecordingsWithError(deleted, firstError);
     });
     await _loadRecordings();
   }
@@ -723,8 +897,10 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     final ok = response?['ok'] == true;
     setState(() {
       _platformStatus = ok
-          ? 'Processed recording: ${response?['name']}'
-          : 'Processing error: ${response?['error']}';
+          ? context.l10n.processedRecording(response?['name']?.toString() ?? '')
+          : context.l10n.processingStatusError(
+              response?['error']?.toString() ?? 'unknown',
+            );
     });
     if (ok) {
       await _loadRecordings();
@@ -745,12 +921,58 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
     final ok = result['ok'] == true;
     final deletedBytes = result['deletedBytes'];
+    final cacheBytes = result['cacheBytes'];
     setState(() {
+      if (cacheBytes is int) {
+        _cacheBytes = cacheBytes;
+      } else if (ok) {
+        _cacheBytes = 0;
+      }
       _platformStatus = ok
-          ? 'Cache cleared: ${_formatBytes(deletedBytes is int ? deletedBytes : 0)}'
-          : 'Clear cache error: ${result['error']}';
+          ? context.l10n.cacheClearedStatus(
+              _formatBytes(deletedBytes is int ? deletedBytes : 0),
+            )
+          : context.l10n.clearCacheStatusError(
+              result['error']?.toString() ?? 'unknown',
+            );
     });
+    if (ok && !_isBuffering) {
+      _meterSnapshot.value = _meterSnapshot.value.copyWith(
+        recordedMillis: 0,
+        sessionRecordedMillis: 0,
+        sessionStartedAt: _epochDateTime,
+        level: 0,
+        peakLevel: 0,
+      );
+    }
     return result;
+  }
+
+  Future<void> _loadCacheStatus() async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final response = await _replayChannel.invokeMapMethod<String, Object?>(
+      'getCacheStatus',
+    );
+    if (!mounted || response == null) {
+      return;
+    }
+    final cacheBytes = response['cacheBytes'];
+    if (cacheBytes is int) {
+      setState(() {
+        _cacheBytes = cacheBytes;
+      });
+    }
+  }
+
+  Future<void> _openExternalUrl(String url) async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    await _replayChannel.invokeMapMethod<String, Object?>('openUrl', {
+      'url': url,
+    });
   }
 
   Future<void> _runLibraryMutation(
@@ -771,8 +993,8 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     final ok = response?['ok'] == true;
     setState(() {
       _platformStatus = ok
-          ? 'Library updated'
-          : 'Library error: ${response?['error'] ?? method}';
+          ? context.l10n.libraryUpdated
+          : context.l10n.libraryError(response?['error']?.toString() ?? method);
     });
     if (ok) {
       await _loadRecordings();
@@ -818,9 +1040,13 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         folderUri: _folderUri,
         sampleRate: _sampleRate,
         bufferSeconds: _bufferSeconds,
+        cacheBytes: _cacheBytes,
+        languageMode: widget.languageMode,
         onChooseFolder: _chooseRecordingFolder,
         onUpdateAudioSettings: _updateAudioSettings,
         onClearCache: _clearCache,
+        onLanguageModeChanged: widget.onLanguageModeChanged,
+        onOpenUrl: _openExternalUrl,
       ),
     };
 
@@ -840,18 +1066,99 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         selectedIndex: _section.index,
         onDestinationSelected: (index) {
           setState(() => _section = AppSection.values[index]);
+          if (AppSection.values[index] == AppSection.settings) {
+            unawaited(_loadCacheStatus());
+          }
         },
         destinations: [
           for (final section in AppSection.values)
             NavigationDestination(
               icon: Icon(section.icon),
               selectedIcon: Icon(_selectedIconFor(section)),
-              label: section.label,
+              label: _sectionLabel(context, section),
             ),
         ],
       ),
     );
   }
+}
+
+String _sectionLabel(BuildContext context, AppSection section) {
+  final l10n = context.l10n;
+  return switch (section) {
+    AppSection.recorder => l10n.navHome,
+    AppSection.library => l10n.navLibrary,
+    AppSection.processing => l10n.navProcessing,
+    AppSection.settings => l10n.navSettings,
+  };
+}
+
+String _languageModeLabel(AppLocalizations l10n, UiLanguageMode mode) {
+  return switch (mode) {
+    UiLanguageMode.system => l10n.followSystemLanguage,
+    UiLanguageMode.english => l10n.englishLanguage,
+    UiLanguageMode.chinese => l10n.chineseLanguage,
+  };
+}
+
+String _friendlyRecordingStatus({
+  required AppLocalizations l10n,
+  required bool running,
+  String? rawError,
+}) {
+  final normalizedError = _normalizeNativeDetail(rawError);
+  if (normalizedError == null) {
+    return running ? l10n.recordingStatusNormal : l10n.recordingStatusPaused;
+  }
+
+  final message = switch (normalizedError) {
+    final value when value.startsWith('storage_low') =>
+      l10n.recordingStatusStorageLow,
+    'microphone_permission_lost' => l10n.recordingStatusPermissionLost,
+    final value when value.startsWith('invalid_min_buffer') =>
+      l10n.recordingStatusAudioUnavailable,
+    'audio_record_not_initialized' => l10n.recordingStatusAudioUnavailable,
+    'pcm_queue_full' => l10n.recordingStatusQueueBusy,
+    'pcm_worker_stopped' => l10n.recordingStatusBackendUnavailable,
+    'pcm_invalid_handle' => l10n.recordingStatusBackendUnavailable,
+    'pcm_panic_caught' => l10n.recordingStatusBackendUnavailable,
+    'pcm_queue_closed' => l10n.recordingStatusBackendUnavailable,
+    'pcm_push_failed' => l10n.recordingStatusBackendUnavailable,
+    'pcm_unknown_push_code' => l10n.recordingStatusBackendUnavailable,
+    'rust_recorder_start_failed' => l10n.recordingStatusBackendUnavailable,
+    final value when value.startsWith('capture_exception') =>
+      l10n.recordingStatusCaptureIssue,
+    _ => l10n.recordingStatusCaptureIssue,
+  };
+
+  final detail = _readableNativeDetail(normalizedError);
+  return detail == null
+      ? message
+      : l10n.recordingStatusWithDetail(message, detail);
+}
+
+String? _normalizeNativeDetail(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null ||
+      trimmed.isEmpty ||
+      trimmed.toLowerCase() == 'null' ||
+      trimmed.toLowerCase() == 'none') {
+    return null;
+  }
+  return trimmed;
+}
+
+String? _readableNativeDetail(String value) {
+  if (value.startsWith('storage_low') ||
+      value.startsWith('invalid_min_buffer') ||
+      value.startsWith('capture_exception')) {
+    return value
+        .split(':')
+        .where((part) => part.isNotEmpty)
+        .skip(1)
+        .join(' / ');
+  }
+  return null;
 }
 
 IconData _selectedIconFor(AppSection section) {
@@ -867,24 +1174,36 @@ class MeterSnapshot {
   const MeterSnapshot({
     required this.running,
     required this.recordedMillis,
+    required this.sessionRecordedMillis,
+    required this.sessionStartedAt,
     required this.level,
     required this.peakLevel,
   });
 
   final bool running;
   final int recordedMillis;
+  final int sessionRecordedMillis;
+  final DateTime? sessionStartedAt;
   final double level;
   final double peakLevel;
 
   MeterSnapshot copyWith({
     bool? running,
     int? recordedMillis,
+    int? sessionRecordedMillis,
+    DateTime? sessionStartedAt,
+    bool clearSessionStartedAt = false,
     double? level,
     double? peakLevel,
   }) {
     return MeterSnapshot(
       running: running ?? this.running,
       recordedMillis: recordedMillis ?? this.recordedMillis,
+      sessionRecordedMillis:
+          sessionRecordedMillis ?? this.sessionRecordedMillis,
+      sessionStartedAt: clearSessionStartedAt
+          ? null
+          : sessionStartedAt ?? this.sessionStartedAt,
       level: level ?? this.level,
       peakLevel: peakLevel ?? this.peakLevel,
     );
@@ -916,128 +1235,264 @@ class _RecorderPage extends StatefulWidget {
 
 class _RecorderPageState extends State<_RecorderPage> {
   static const List<SaveDurationOption> _durations = [
-    SaveDurationOption(10, '10 秒'),
-    SaveDurationOption(30, '30 秒'),
-    SaveDurationOption(60, '1 分钟'),
-    SaveDurationOption(120, '2 分钟'),
-    SaveDurationOption(300, '5 分钟'),
-    SaveDurationOption(600, '10 分钟'),
-    SaveDurationOption(1800, '30 分钟'),
+    SaveDurationOption(10),
+    SaveDurationOption(30),
+    SaveDurationOption(60),
+    SaveDurationOption(120),
+    SaveDurationOption(300),
+    SaveDurationOption(600),
+    SaveDurationOption(1800),
   ];
 
   SaveDurationOption _selectedDuration = _durations[1];
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final l10n = context.l10n;
+    return ListView(
+      children: [
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(
-                widget.isBuffering ? Icons.graphic_eq : Icons.pause_circle,
-                color: widget.isBuffering
-                    ? const Color(0xFF1B7F79)
-                    : Colors.orange,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  widget.isBuffering ? '即时回放运行中' : '录制已暂停',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          ValueListenableBuilder<MeterSnapshot>(
-            valueListenable: widget.meterSnapshot,
-            builder: (context, snapshot, _) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Row(
                 children: [
-                  Text(
-                    _formatDurationMillis(snapshot.recordedMillis),
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
+                  Icon(
+                    widget.isBuffering ? Icons.graphic_eq : Icons.pause_circle,
+                    color: widget.isBuffering
+                        ? const Color(0xFF1B7F79)
+                        : Colors.orange,
                   ),
-                  const SizedBox(height: 10),
-                  Text(
-                    widget.platformStatus,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFF52615E),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      widget.isBuffering
+                          ? l10n.replayRunning
+                          : l10n.recordingPaused,
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  LoudnessMeter(
-                    level: snapshot.level,
-                    peakLevel: snapshot.peakLevel,
-                    isRecording: snapshot.running,
                   ),
                 ],
-              );
-            },
-          ),
-          const SizedBox(height: 20),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              FilledButton.icon(
-                style: FilledButton.styleFrom(minimumSize: const Size(152, 56)),
-                onPressed: widget.folderSelected
-                    ? () => widget.onSave(_selectedDuration.seconds)
-                    : null,
-                icon: const Icon(Icons.save_alt),
-                label: Text('保存 ${_selectedDuration.label}'),
               ),
-              DropdownMenu<SaveDurationOption>(
-                initialSelection: _selectedDuration,
-                width: 168,
-                leadingIcon: const Icon(Icons.timer_outlined),
-                inputDecorationTheme: const InputDecorationTheme(
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12),
-                  constraints: BoxConstraints(minHeight: 56),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.all(Radius.circular(28)),
-                  ),
-                ),
-                onSelected: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() {
-                    _selectedDuration = value;
-                  });
+              const SizedBox(height: 20),
+              ValueListenableBuilder<MeterSnapshot>(
+                valueListenable: widget.meterSnapshot,
+                builder: (context, snapshot, _) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _RecordingTimeSummary(
+                        snapshot: snapshot,
+                        statusText: widget.platformStatus,
+                      ),
+                      const SizedBox(height: 10),
+                      LoudnessMeter(
+                        level: snapshot.level,
+                        peakLevel: snapshot.peakLevel,
+                        isRecording: snapshot.running,
+                      ),
+                    ],
+                  );
                 },
-                dropdownMenuEntries: [
-                  for (final option in _durations)
-                    DropdownMenuEntry(value: option, label: option.label),
+              ),
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  ValueListenableBuilder<MeterSnapshot>(
+                    valueListenable: widget.meterSnapshot,
+                    builder: (context, snapshot, _) {
+                      final canSave =
+                          widget.folderSelected && snapshot.recordedMillis > 0;
+                      return FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(152, 56),
+                        ),
+                        onPressed: canSave
+                            ? () => widget.onSave(_selectedDuration.seconds)
+                            : null,
+                        icon: const Icon(Icons.save_alt),
+                        label: Text(
+                          l10n.saveClip(
+                            _formatDurationLabel(
+                              l10n,
+                              _selectedDuration.seconds,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  DropdownMenu<SaveDurationOption>(
+                    initialSelection: _selectedDuration,
+                    width: 168,
+                    leadingIcon: const Icon(Icons.timer_outlined),
+                    inputDecorationTheme: const InputDecorationTheme(
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                      constraints: BoxConstraints(minHeight: 56),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(28)),
+                      ),
+                    ),
+                    onSelected: (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      setState(() {
+                        _selectedDuration = value;
+                      });
+                    },
+                    dropdownMenuEntries: [
+                      for (final option in _durations)
+                        DropdownMenuEntry(
+                          value: option,
+                          label: _formatDurationLabel(l10n, option.seconds),
+                        ),
+                    ],
+                  ),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(112, 56),
+                    ),
+                    onPressed: widget.onToggle,
+                    icon: Icon(
+                      widget.isBuffering ? Icons.pause : Icons.play_arrow,
+                    ),
+                    label: Text(widget.isBuffering ? l10n.pause : l10n.resume),
+                  ),
+                  if (!widget.folderSelected)
+                    OutlinedButton.icon(
+                      onPressed: widget.onChooseFolder,
+                      icon: const Icon(Icons.folder_open),
+                      label: Text(l10n.chooseFolder),
+                    ),
                 ],
               ),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(112, 56),
-                ),
-                onPressed: widget.onToggle,
-                icon: Icon(widget.isBuffering ? Icons.pause : Icons.play_arrow),
-                label: Text(widget.isBuffering ? '暂停' : '继续'),
-              ),
-              if (!widget.folderSelected)
-                OutlinedButton.icon(
-                  onPressed: widget.onChooseFolder,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('选择目录'),
-                ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RecordingTimeSummary extends StatelessWidget {
+  const _RecordingTimeSummary({
+    required this.snapshot,
+    required this.statusText,
+  });
+
+  final MeterSnapshot snapshot;
+  final String statusText;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final startedAt = snapshot.sessionStartedAt ?? _epochDateTime;
+    final startText = snapshot.running
+        ? l10n.recordingStartedAt(_formatSessionStart(startedAt))
+        : l10n.lastRecordingStartedAt(_formatSessionStart(startedAt));
+    final labelStyle = theme.textTheme.bodySmall?.copyWith(
+      color: const Color(0xFF6C7472),
+    );
+    final numberStyle = theme.textTheme.headlineMedium?.copyWith(
+      fontWeight: FontWeight.w700,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    final totalStyle = theme.textTheme.titleLarge?.copyWith(
+      fontWeight: FontWeight.w700,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(startText, style: labelStyle),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              flex: 6,
+              child: _TimeBlock(
+                label: l10n.currentRecordingDuration,
+                value: _formatDurationMillis(snapshot.sessionRecordedMillis),
+                labelStyle: labelStyle,
+                valueStyle: numberStyle,
+              ),
+            ),
+            Container(
+              width: 1,
+              height: 44,
+              margin: const EdgeInsets.symmetric(horizontal: 14),
+              color: const Color(0xFFD7DFDC),
+            ),
+            Expanded(
+              flex: 5,
+              child: _TimeBlock(
+                label: l10n.totalRecordedDuration,
+                value: _formatDurationMillis(snapshot.recordedMillis),
+                labelStyle: labelStyle,
+                valueStyle: totalStyle,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(
+          statusText,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: const Color(0xFF52615E),
+          ),
+        ),
+        const SizedBox(height: 18),
+      ],
+    );
+  }
+}
+
+class _TimeBlock extends StatelessWidget {
+  const _TimeBlock({
+    required this.label,
+    required this.value,
+    required this.labelStyle,
+    required this.valueStyle,
+  });
+
+  final String label;
+  final String value;
+  final TextStyle? labelStyle;
+  final TextStyle? valueStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: labelStyle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 4),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(value, style: valueStyle),
+        ),
+      ],
     );
   }
 }
@@ -1097,6 +1552,7 @@ class LoudnessMeter extends StatelessWidget {
     required double level,
     required double peakLevel,
   }) {
+    final l10n = context.l10n;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1111,7 +1567,12 @@ class LoudnessMeter extends StatelessWidget {
             children: [
               const Icon(Icons.graphic_eq, color: Color(0xFF1B7F79)),
               const SizedBox(width: 10),
-              Expanded(child: Text('实时响度', style: theme.textTheme.titleMedium)),
+              Expanded(
+                child: Text(
+                  l10n.loudnessTitle,
+                  style: theme.textTheme.titleMedium,
+                ),
+              ),
               Text(
                 dbText,
                 style: theme.textTheme.titleMedium?.copyWith(
@@ -1139,21 +1600,23 @@ class LoudnessMeter extends StatelessWidget {
           Row(
             children: [
               Text(
-                '静音',
+                l10n.silenceLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: const Color(0xFF6C7472),
                 ),
               ),
               const Spacer(),
               Text(
-                isRecording ? '麦克风输入' : '未录制',
+                isRecording
+                    ? l10n.microphoneInputLabel
+                    : l10n.notRecordingLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: const Color(0xFF6C7472),
                 ),
               ),
               const Spacer(),
               Text(
-                '峰值',
+                l10n.peakLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: const Color(0xFF6C7472),
                 ),
@@ -1339,9 +1802,10 @@ class _LibraryPageState extends State<_LibraryPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final rootClips = clips.where((clip) => clip.groupUri == null).toList();
     final groupSections = [
-      _ClipGroupSection(title: '未分组', group: null, clips: rootClips),
+      _ClipGroupSection(title: l10n.unGrouped, group: null, clips: rootClips),
       for (final group in groups)
         _ClipGroupSection(
           title: group.name,
@@ -1360,7 +1824,7 @@ class _LibraryPageState extends State<_LibraryPage> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  '录音列表',
+                  l10n.libraryTitle,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
@@ -1371,38 +1835,32 @@ class _LibraryPageState extends State<_LibraryPage> {
                 ),
               if (_isEditing)
                 IconButton(
-                  tooltip: '全选',
+                  tooltip: l10n.selectAll,
                   onPressed: clips.isEmpty ? null : _selectAll,
                   icon: const Icon(Icons.select_all),
                 )
               else
                 IconButton(
-                  tooltip: '新建分组',
+                  tooltip: l10n.newGroup,
                   onPressed: () => _createGroup(context),
                   icon: const Icon(Icons.create_new_folder),
                 ),
               if (_isEditing)
                 IconButton(
-                  tooltip: '删除所选',
+                  tooltip: l10n.deleteSelected,
                   onPressed: _selectedClipUris.isEmpty
                       ? null
                       : () => _deleteSelectedClips(context),
                   icon: const Icon(Icons.delete_outline),
-                )
-              else
-                IconButton(
-                  tooltip: '停止预览',
-                  onPressed: onStop,
-                  icon: const Icon(Icons.stop),
                 ),
               IconButton(
-                tooltip: _isEditing ? '完成' : '编辑',
+                tooltip: _isEditing ? l10n.done : l10n.edit,
                 onPressed: _toggleEditing,
                 icon: Icon(_isEditing ? Icons.done : Icons.edit),
               ),
               if (!_isEditing)
                 IconButton(
-                  tooltip: '刷新',
+                  tooltip: l10n.refresh,
                   onPressed: onRefresh,
                   icon: const Icon(Icons.refresh),
                 ),
@@ -1411,7 +1869,7 @@ class _LibraryPageState extends State<_LibraryPage> {
           const SizedBox(height: 16),
           Expanded(
             child: clips.isEmpty && groups.isEmpty
-                ? const Center(child: Text('暂无录音'))
+                ? Center(child: Text(l10n.emptyRecordings))
                 : ListView(
                     children: [
                       for (final section in groupSections)
@@ -1437,7 +1895,7 @@ class _LibraryPageState extends State<_LibraryPage> {
       trailing: group == null
           ? null
           : PopupMenuButton<String>(
-              tooltip: '分组操作',
+              tooltip: context.l10n.groupActions,
               onSelected: (value) {
                 switch (value) {
                   case 'rename':
@@ -1448,16 +1906,25 @@ class _LibraryPageState extends State<_LibraryPage> {
                     break;
                 }
               },
-              itemBuilder: (context) => const [
-                PopupMenuItem(value: 'rename', child: Text('重命名分组')),
-                PopupMenuItem(value: 'delete', child: Text('删除分组')),
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'rename',
+                  child: Text(context.l10n.renameGroup),
+                ),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(context.l10n.deleteGroup),
+                ),
               ],
             ),
       children: [
         if (section.clips.isEmpty)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(44, 0, 0, 14),
-            child: Align(alignment: Alignment.centerLeft, child: Text('暂无录音')),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(44, 0, 0, 14),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(context.l10n.emptyRecordings),
+            ),
           )
         else
           for (final clip in section.clips) _buildClipTile(context, clip),
@@ -1482,7 +1949,7 @@ class _LibraryPageState extends State<_LibraryPage> {
                       : (_) => _toggleClipSelection(clip),
                 )
               : IconButton.filledTonal(
-                  tooltip: '预览',
+                  tooltip: context.l10n.preview,
                   onPressed: () => onPlay(clip),
                   icon: const Icon(Icons.play_arrow),
                 ),
@@ -1498,7 +1965,7 @@ class _LibraryPageState extends State<_LibraryPage> {
           trailing: _isEditing
               ? null
               : PopupMenuButton<String>(
-                  tooltip: '录音操作',
+                  tooltip: context.l10n.recordingActions,
                   onSelected: (value) {
                     switch (value) {
                       case 'rename':
@@ -1512,10 +1979,19 @@ class _LibraryPageState extends State<_LibraryPage> {
                         break;
                     }
                   },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(value: 'rename', child: Text('重命名')),
-                    PopupMenuItem(value: 'move', child: Text('移动到分组')),
-                    PopupMenuItem(value: 'delete', child: Text('删除')),
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'rename',
+                      child: Text(context.l10n.rename),
+                    ),
+                    PopupMenuItem(
+                      value: 'move',
+                      child: Text(context.l10n.moveToGroup),
+                    ),
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Text(context.l10n.delete),
+                    ),
                   ],
                 ),
         ),
@@ -1581,8 +2057,8 @@ class _LibraryPageState extends State<_LibraryPage> {
     }
     final confirmed = await _confirm(
       context,
-      title: '批量删除录音',
-      message: '确定删除选中的 ${selectedClips.length} 个录音？此操作不可撤销。',
+      title: context.l10n.batchDeleteRecordings,
+      message: context.l10n.confirmBatchDeleteRecordings(selectedClips.length),
     );
     if (!confirmed || !context.mounted) {
       return;
@@ -1598,7 +2074,11 @@ class _LibraryPageState extends State<_LibraryPage> {
   }
 
   Future<void> _createGroup(BuildContext context) async {
-    final name = await _promptText(context, title: '新建分组', label: '分组名');
+    final name = await _promptText(
+      context,
+      title: context.l10n.newGroup,
+      label: context.l10n.groupName,
+    );
     if (name == null) {
       return;
     }
@@ -1608,8 +2088,8 @@ class _LibraryPageState extends State<_LibraryPage> {
   Future<void> _renameGroup(BuildContext context, RecordingGroup group) async {
     final name = await _promptText(
       context,
-      title: '重命名分组',
-      label: '分组名',
+      title: context.l10n.renameGroup,
+      label: context.l10n.groupName,
       initialValue: group.name,
     );
     if (name == null) {
@@ -1621,8 +2101,8 @@ class _LibraryPageState extends State<_LibraryPage> {
   Future<void> _deleteGroup(BuildContext context, RecordingGroup group) async {
     final confirmed = await _confirm(
       context,
-      title: '删除分组',
-      message: '将删除分组及其中录音，此操作不可撤销。',
+      title: context.l10n.deleteGroup,
+      message: context.l10n.confirmDeleteGroup,
     );
     if (confirmed) {
       await onDeleteGroup(group);
@@ -1632,8 +2112,8 @@ class _LibraryPageState extends State<_LibraryPage> {
   Future<void> _renameClip(BuildContext context, ClipItem clip) async {
     final name = await _promptText(
       context,
-      title: '重命名录音',
-      label: '文件名',
+      title: context.l10n.renameRecording,
+      label: context.l10n.fileName,
       initialValue: clip.name,
     );
     if (name == null) {
@@ -1645,8 +2125,8 @@ class _LibraryPageState extends State<_LibraryPage> {
   Future<void> _deleteClip(BuildContext context, ClipItem clip) async {
     final confirmed = await _confirm(
       context,
-      title: '删除录音',
-      message: '确定删除 ${clip.name}？此操作不可撤销。',
+      title: context.l10n.deleteRecording,
+      message: context.l10n.confirmDeleteRecording(clip.name),
     );
     if (confirmed) {
       await onDeleteClip(clip);
@@ -1657,11 +2137,11 @@ class _LibraryPageState extends State<_LibraryPage> {
     final target = await showDialog<Object?>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('移动到分组'),
+        title: Text(context.l10n.moveToGroup),
         children: [
           SimpleDialogOption(
             onPressed: () => Navigator.of(context).pop(_UngroupTarget.instance),
-            child: const Text('未分组'),
+            child: Text(context.l10n.unGrouped),
           ),
           for (final group in groups)
             SimpleDialogOption(
@@ -1706,11 +2186,11 @@ Future<String?> _promptText(
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-          child: const Text('确定'),
+          child: Text(context.l10n.ok),
         ),
       ],
     ),
@@ -1730,11 +2210,11 @@ Future<bool> _confirm(
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('取消'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('确定'),
+          child: Text(context.l10n.ok),
         ),
       ],
     ),
@@ -1865,7 +2345,9 @@ class _PlaybackControlsState extends State<_PlaybackControls> {
           Row(
             children: [
               IconButton(
-                tooltip: widget.playback.playing ? '暂停' : '继续',
+                tooltip: widget.playback.playing
+                    ? context.l10n.pause
+                    : context.l10n.resume,
                 onPressed: widget.playback.playing
                     ? widget.onPause
                     : widget.onResume,
@@ -1874,7 +2356,7 @@ class _PlaybackControlsState extends State<_PlaybackControls> {
                 ),
               ),
               IconButton(
-                tooltip: '停止',
+                tooltip: context.l10n.stop,
                 onPressed: widget.onStop,
                 icon: const Icon(Icons.stop),
               ),
@@ -1969,21 +2451,25 @@ class _ProcessingPageState extends State<_ProcessingPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return ListView(
       children: [
         _Panel(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('音频处理', style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                l10n.processingTitle,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 initialValue: _selectedUri,
                 isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: '源录音',
-                  prefixIcon: Icon(Icons.library_music),
-                  border: OutlineInputBorder(
+                decoration: InputDecoration(
+                  labelText: l10n.sourceRecording,
+                  prefixIcon: const Icon(Icons.library_music),
+                  border: const OutlineInputBorder(
                     borderRadius: BorderRadius.all(Radius.circular(8)),
                   ),
                 ),
@@ -2015,7 +2501,9 @@ class _ProcessingPageState extends State<_ProcessingPage> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      '增益 ${_gainDb >= 0 ? '+' : ''}${_gainDb.toStringAsFixed(1)} dB',
+                      l10n.gainDb(
+                        '${_gainDb >= 0 ? '+' : ''}${_gainDb.toStringAsFixed(1)}',
+                      ),
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
@@ -2036,10 +2524,10 @@ class _ProcessingPageState extends State<_ProcessingPage> {
               DropdownButtonFormField<String>(
                 initialValue: _format,
                 isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: '输出格式',
-                  prefixIcon: Icon(Icons.audio_file),
-                  border: OutlineInputBorder(
+                decoration: InputDecoration(
+                  labelText: l10n.outputFormat,
+                  prefixIcon: const Icon(Icons.audio_file),
+                  border: const OutlineInputBorder(
                     borderRadius: BorderRadius.all(Radius.circular(8)),
                   ),
                 ),
@@ -2055,10 +2543,10 @@ class _ProcessingPageState extends State<_ProcessingPage> {
                 const SizedBox(height: 14),
                 DropdownButtonFormField<int>(
                   initialValue: _mp3BitrateKbps,
-                  decoration: const InputDecoration(
-                    labelText: 'MP3 码率',
-                    prefixIcon: Icon(Icons.speed),
-                    border: OutlineInputBorder(
+                  decoration: InputDecoration(
+                    labelText: l10n.mp3Bitrate,
+                    prefixIcon: const Icon(Icons.speed),
+                    border: const OutlineInputBorder(
                       borderRadius: BorderRadius.all(Radius.circular(8)),
                     ),
                   ),
@@ -2087,7 +2575,9 @@ class _ProcessingPageState extends State<_ProcessingPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.auto_fix_high),
-                label: Text(_processing ? '处理中' : '生成处理副本'),
+                label: Text(
+                  _processing ? l10n.processing : l10n.generateProcessedCopy,
+                ),
               ),
               if (_message != null) ...[
                 const SizedBox(height: 12),
@@ -2120,7 +2610,9 @@ class _ProcessingPageState extends State<_ProcessingPage> {
     }
     setState(() {
       _processing = false;
-      _message = ok ? '处理完成，已生成新的录音文件。' : '处理失败，请检查 FFmpeg 或源文件。';
+      _message = ok
+          ? context.l10n.processingComplete
+          : context.l10n.processingFailed;
     });
   }
 }
@@ -2135,29 +2627,122 @@ extension _FirstOrNullExtension<T> on Iterable<T> {
   }
 }
 
+class _BufferMinutesField extends StatefulWidget {
+  const _BufferMinutesField({
+    required this.bufferSeconds,
+    required this.onChanged,
+  });
+
+  final int bufferSeconds;
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_BufferMinutesField> createState() => _BufferMinutesFieldState();
+}
+
+class _BufferMinutesFieldState extends State<_BufferMinutesField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  int get _minutes => (widget.bufferSeconds / 60).round().clamp(1, 1440);
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _minutes.toString());
+    _focusNode = FocusNode()..addListener(_handleFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(covariant _BufferMinutesField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bufferSeconds != widget.bufferSeconds &&
+        !_focusNode.hasFocus) {
+      _controller.text = _minutes.toString();
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_handleFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleFocusChange() {
+    if (!_focusNode.hasFocus) {
+      _applyValue();
+    }
+  }
+
+  void _applyValue() {
+    final parsed = int.tryParse(_controller.text.trim()) ?? _minutes;
+    final minutes = parsed.clamp(1, 1440).toInt();
+    _controller.text = minutes.toString();
+    if (minutes != _minutes) {
+      widget.onChanged(minutes);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return TextField(
+      controller: _controller,
+      focusNode: _focusNode,
+      keyboardType: TextInputType.number,
+      textInputAction: TextInputAction.done,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      onSubmitted: (_) => _applyValue(),
+      decoration: InputDecoration(
+        labelText: l10n.bufferDurationMinutes,
+        helperText: l10n.bufferDurationHelper,
+        suffixText: l10n.minutesUnit,
+        prefixIcon: const Icon(Icons.schedule),
+        border: const OutlineInputBorder(
+          borderRadius: BorderRadius.all(Radius.circular(8)),
+        ),
+      ),
+    );
+  }
+}
+
 class _SettingsPage extends StatelessWidget {
   const _SettingsPage({
     required this.folderUri,
     required this.sampleRate,
     required this.bufferSeconds,
+    required this.cacheBytes,
+    required this.languageMode,
     required this.onChooseFolder,
     required this.onUpdateAudioSettings,
     required this.onClearCache,
+    required this.onLanguageModeChanged,
+    required this.onOpenUrl,
   });
 
   static const List<int> _sampleRateOptions = [8000, 16000, 24000, 48000];
-  static const List<int> _bufferSecondOptions = [600, 1800, 3600, 7200, 18000];
+  static const String _repositoryUrl =
+      'https://github.com/MaidTendouAris/EchoClip';
+  static const String _issuesUrl =
+      'https://github.com/MaidTendouAris/EchoClip/issues';
 
   final String? folderUri;
   final int sampleRate;
   final int bufferSeconds;
+  final int cacheBytes;
+  final UiLanguageMode languageMode;
   final Future<void> Function() onChooseFolder;
   final Future<void> Function({int? sampleRate, int? bufferSeconds})
   onUpdateAudioSettings;
   final Future<Map<String, Object?>> Function() onClearCache;
+  final Future<void> Function(UiLanguageMode mode) onLanguageModeChanged;
+  final Future<void> Function(String url) onOpenUrl;
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final estimatedPcmBytes = sampleRate * bufferSeconds * 2;
 
     return ListView(
@@ -2166,28 +2751,64 @@ class _SettingsPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('设置', style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                l10n.settingsTitle,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 16),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.folder),
-                title: const Text('录音目录'),
-                subtitle: Text(folderUri ?? '未选择'),
+                title: Text(l10n.recordingFolder),
+                subtitle: Text(folderUri ?? l10n.notSelected),
                 trailing: FilledButton.icon(
                   onPressed: onChooseFolder,
                   icon: const Icon(Icons.folder_open),
-                  label: const Text('更改'),
+                  label: Text(l10n.change),
                 ),
               ),
               const Divider(height: 28),
-              Text('录制设置', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                l10n.languageSettings,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<UiLanguageMode>(
+                key: ValueKey(languageMode),
+                initialValue: languageMode,
+                decoration: InputDecoration(
+                  labelText: l10n.appLanguage,
+                  prefixIcon: const Icon(Icons.language),
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: [
+                  for (final mode in UiLanguageMode.values)
+                    DropdownMenuItem(
+                      value: mode,
+                      child: Text(_languageModeLabel(l10n, mode)),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  onLanguageModeChanged(value);
+                },
+              ),
+              const Divider(height: 28),
+              Text(
+                l10n.recordingSettings,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 14),
               DropdownButtonFormField<int>(
                 initialValue: sampleRate,
-                decoration: const InputDecoration(
-                  labelText: 'Android 采样率',
-                  prefixIcon: Icon(Icons.graphic_eq),
-                  border: OutlineInputBorder(
+                decoration: InputDecoration(
+                  labelText: l10n.androidSampleRate,
+                  prefixIcon: const Icon(Icons.graphic_eq),
+                  border: const OutlineInputBorder(
                     borderRadius: BorderRadius.all(Radius.circular(8)),
                   ),
                 ),
@@ -2206,51 +2827,71 @@ class _SettingsPage extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 14),
-              DropdownButtonFormField<int>(
-                initialValue: bufferSeconds,
-                decoration: const InputDecoration(
-                  labelText: '缓存时长',
-                  prefixIcon: Icon(Icons.schedule),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.all(Radius.circular(8)),
-                  ),
-                ),
-                items: [
-                  for (final value in _bufferSecondOptions)
-                    DropdownMenuItem(
-                      value: value,
-                      child: Text(_formatLongDuration(value)),
-                    ),
-                ],
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  onUpdateAudioSettings(bufferSeconds: value);
+              _BufferMinutesField(
+                bufferSeconds: bufferSeconds,
+                onChanged: (minutes) {
+                  onUpdateAudioSettings(bufferSeconds: minutes * 60);
                 },
               ),
               const SizedBox(height: 14),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.memory),
-                title: Text('预计 PCM 缓冲：${_formatBytes(estimatedPcmBytes)}'),
+                title: Text(
+                  l10n.estimatedPcmBuffer(_formatBytes(estimatedPcmBytes)),
+                ),
                 subtitle: Text(
-                  '${_formatHertz(sampleRate)} · 单声道 · 16-bit PCM · 录制中修改下次启动生效',
+                  l10n.pcmBufferSubtitle(_formatHertz(sampleRate)),
                 ),
               ),
               const Divider(height: 28),
-              Text('缓存', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                l10n.cacheTitle,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 6),
               ListTile(
                 contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.storage),
+                title: Text(l10n.currentCacheSize(_formatBytes(cacheBytes))),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.cleaning_services),
-                title: const Text('清除缓存'),
-                subtitle: const Text('清理临时导出、处理缓存；录制中会保留当前回放缓存'),
+                title: Text(l10n.clearCache),
+                subtitle: Text(l10n.clearCacheSubtitle),
                 trailing: IconButton.filledTonal(
-                  tooltip: '清除',
+                  tooltip: l10n.clearCache,
                   onPressed: () => _confirmClearCache(context),
                   icon: const Icon(Icons.delete_sweep),
                 ),
+              ),
+              const Divider(height: 28),
+              Text(
+                l10n.aboutProject,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.code),
+                title: Text(l10n.githubRepository),
+                subtitle: Text(l10n.githubRepositorySubtitle),
+                onTap: () => onOpenUrl(_repositoryUrl),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.balance),
+                title: Text(l10n.licenseTitle),
+                subtitle: Text(l10n.licenseSubtitle),
+                onTap: () => onOpenUrl('$_repositoryUrl/blob/main/LICENSE'),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.bug_report),
+                title: Text(l10n.issueFeedback),
+                subtitle: Text(l10n.issueFeedbackSubtitle),
+                onTap: () => onOpenUrl(_issuesUrl),
               ),
             ],
           ),
@@ -2262,8 +2903,8 @@ class _SettingsPage extends StatelessWidget {
   Future<void> _confirmClearCache(BuildContext context) async {
     final confirmed = await _confirm(
       context,
-      title: '清除缓存',
-      message: '确定清除 EchoClip 的临时缓存？此操作不会删除已保存录音。',
+      title: context.l10n.clearCache,
+      message: context.l10n.confirmClearCache,
     );
     if (!confirmed || !context.mounted) {
       return;
@@ -2274,9 +2915,16 @@ class _SettingsPage extends StatelessWidget {
     }
     final deletedBytes = result['deletedBytes'];
     final activePreserved = result['activeReplayCachePreserved'] == true;
+    final l10n = context.l10n;
     final message = result['ok'] == true
-        ? '已清理 ${_formatBytes(deletedBytes is int ? deletedBytes : 0)}${activePreserved ? '，当前回放缓存已保留' : ''}'
-        : '清理失败：${result['error']}';
+        ? (activePreserved
+              ? l10n.cacheClearedActivePreserved(
+                  _formatBytes(deletedBytes is int ? deletedBytes : 0),
+                )
+              : l10n.cacheCleared(
+                  _formatBytes(deletedBytes is int ? deletedBytes : 0),
+                ))
+        : l10n.cacheClearFailed(result['error']?.toString() ?? 'unknown');
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
@@ -2304,10 +2952,9 @@ class _Panel extends StatelessWidget {
 }
 
 class SaveDurationOption {
-  const SaveDurationOption(this.seconds, this.label);
+  const SaveDurationOption(this.seconds);
 
   final int seconds;
-  final String label;
 }
 
 class RecordingGroup {
@@ -2315,7 +2962,7 @@ class RecordingGroup {
 
   factory RecordingGroup.fromNative(Map<dynamic, dynamic> value) {
     return RecordingGroup(
-      name: value['name']?.toString() ?? '未命名分组',
+      name: value['name']?.toString() ?? 'Unnamed group',
       uri: value['uri']?.toString() ?? '',
     );
   }
@@ -2427,33 +3074,38 @@ String _formatDuration(int totalSeconds) {
 String _formatDurationMillis(int totalMillis) {
   final safeMillis = math.max(0, totalMillis);
   final totalSeconds = safeMillis ~/ 1000;
-  final millis = safeMillis % 1000;
+  final centiseconds = (safeMillis % 1000) ~/ 10;
   final seconds = totalSeconds % 60;
   final minutes = (totalSeconds ~/ 60) % 60;
   final hours = totalSeconds ~/ 3600;
 
-  if (hours > 0) {
-    return '${hours.toString().padLeft(2, '0')}:'
-        '${minutes.toString().padLeft(2, '0')}:'
-        '${seconds.toString().padLeft(2, '0')}.'
-        '${millis.toString().padLeft(3, '0')}';
-  }
-
-  return '${minutes.toString().padLeft(2, '0')}:'
+  return '${hours.toString().padLeft(2, '0')}:'
+      '${minutes.toString().padLeft(2, '0')}:'
       '${seconds.toString().padLeft(2, '0')}.'
-      '${millis.toString().padLeft(3, '0')}';
+      '${centiseconds.toString().padLeft(2, '0')}';
 }
 
-String _formatLongDuration(int totalSeconds) {
+String _formatSessionStart(DateTime time) {
+  return '${time.year}.'
+      '${time.month.toString().padLeft(2, '0')}.'
+      '${time.day.toString().padLeft(2, '0')} '
+      '${time.hour.toString().padLeft(2, '0')}:'
+      '${time.minute.toString().padLeft(2, '0')}';
+}
+
+String _formatDurationLabel(AppLocalizations l10n, int totalSeconds) {
   final hours = totalSeconds ~/ 3600;
   final minutes = (totalSeconds % 3600) ~/ 60;
   if (hours == 0) {
-    return '$minutes 分钟';
+    if (minutes == 0) {
+      return l10n.secondsShort(totalSeconds);
+    }
+    return l10n.minutesShort(minutes);
   }
   if (minutes == 0) {
-    return '$hours 小时';
+    return l10n.hoursShort(hours);
   }
-  return '$hours 小时 $minutes 分钟';
+  return l10n.hoursMinutesShort(hours, minutes);
 }
 
 String _formatHertz(int sampleRate) {

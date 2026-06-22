@@ -76,6 +76,17 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(settings.toMap())
                     }
+                    "getUiLanguageMode" -> {
+                        result.success(
+                            mapOf("mode" to RecordingStorage.getUiLanguageMode(this)),
+                        )
+                    }
+                    "setUiLanguageMode" -> {
+                        val mode = call.argument<String>("mode") ?: "system"
+                        result.success(
+                            mapOf("mode" to RecordingStorage.setUiLanguageMode(this, mode)),
+                        )
+                    }
                     "chooseRecordingFolder" -> chooseRecordingFolder(result)
                     "listRecordings" -> result.success(listRecordings())
                     "listGroups" -> result.success(listGroups())
@@ -119,6 +130,11 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                     "clearCache" -> result.success(clearCache())
+                    "getCacheStatus" -> result.success(cacheStatus())
+                    "openUrl" -> {
+                        val url = call.argument<String>("url")
+                        result.success(openUrl(url))
+                    }
                     "playRecording" -> {
                         val uri = call.argument<String>("uri")
                         if (uri == null) {
@@ -148,12 +164,7 @@ class MainActivity : FlutterActivity() {
                             val seconds = call.argument<Int>("seconds") ?: 30
                             val service = ReplayForegroundService.activeService
                             if (service == null) {
-                                result.success(
-                                    mapOf(
-                                        "saved" to false,
-                                        "error" to "service_not_running",
-                                    ),
-                                )
+                                result.success(saveLatestClipFromCache(seconds))
                             } else {
                                 result.success(service.saveLatestClip(seconds))
                             }
@@ -181,11 +192,17 @@ class MainActivity : FlutterActivity() {
                             result.success(
                                 service?.status() ?: mapOf(
                                     "running" to false,
-                                    "availableSeconds" to 0,
-                                    "availableMillis" to 0L,
+                                    "availableSeconds" to
+                                        (RecordingStorage.getLastAvailableMillis(this) / 1_000L)
+                                            .toInt(),
+                                    "availableMillis" to
+                                        RecordingStorage.getLastAvailableMillis(this),
+                                    "sessionStartedUnixMillis" to
+                                        RecordingStorage.getLastSessionStartedUnixMillis(this),
                                     "levelFrames" to emptyList<Map<String, Any>>(),
                                     "levelClockMs" to SystemClock.elapsedRealtime(),
                                     "backend" to RustAudioCore.backendName(),
+                                    "cacheBytes" to cacheBytes(),
                                 ),
                             )
                         }
@@ -194,7 +211,10 @@ class MainActivity : FlutterActivity() {
                             result.success(
                                 service?.meterStatus() ?: mapOf(
                                     "running" to false,
-                                    "availableMillis" to 0L,
+                                    "availableMillis" to
+                                        RecordingStorage.getLastAvailableMillis(this),
+                                    "sessionStartedUnixMillis" to
+                                        RecordingStorage.getLastSessionStartedUnixMillis(this),
                                     "level" to 0.0,
                                     "peakLevel" to 0.0,
                                 ),
@@ -220,6 +240,7 @@ class MainActivity : FlutterActivity() {
                             "getMeterStatus" -> mapOf(
                                 "running" to false,
                                 "availableMillis" to 0L,
+                                "sessionStartedUnixMillis" to 0L,
                                 "level" to 0.0,
                                 "peakLevel" to 0.0,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
@@ -231,6 +252,10 @@ class MainActivity : FlutterActivity() {
                             "getAudioSettings", "setAudioSettings" -> mapOf(
                                 "sampleRate" to 16_000,
                                 "bufferSeconds" to 1_800,
+                                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
+                            )
+                            "getUiLanguageMode", "setUiLanguageMode" -> mapOf(
+                                "mode" to "system",
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
                             "getExportSettings", "setExportSettings" -> mapOf(
@@ -247,7 +272,8 @@ class MainActivity : FlutterActivity() {
                             "listGroups" -> emptyList<Map<String, Any?>>()
                             "createGroup", "renameGroup", "deleteGroup",
                             "renameRecording", "deleteRecording", "moveRecording",
-                            "processRecording", "clearCache" -> mapOf(
+                            "processRecording", "clearCache", "getCacheStatus",
+                            "openUrl" -> mapOf(
                                 "ok" to false,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
@@ -683,6 +709,113 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun saveLatestClipFromCache(seconds: Int): Map<String, Any?> {
+        val settings = RecordingStorage.getAudioSettings(this)
+        val runtimeDir = File(filesDir, "echoclip-runtime").apply { mkdirs() }
+        val handle = RustAudioCore.startRecorder(
+            tempDir = runtimeDir.absolutePath,
+            sampleRate = settings.sampleRate,
+            channels = 1,
+            segmentSeconds = 60,
+            maxReplaySeconds = settings.bufferSeconds,
+            queueCapacityChunks = 1,
+        )
+        if (handle == 0L) {
+            return mapOf("saved" to false, "error" to "rust_buffer_unavailable")
+        }
+
+        return try {
+            val availableMillis = RustAudioCore.availableMillis(handle)
+            if (availableMillis <= 0L) {
+                return mapOf("saved" to false, "error" to "buffer_empty")
+            }
+            val folderUri = RecordingStorage.getRecordingFolderUri(this)
+                ?: return mapOf("saved" to false, "error" to "recording_folder_not_selected")
+            val exportSettings = RecordingStorage.getExportSettings(this)
+            val timestamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+                .format(java.util.Date())
+            val safeSeconds = seconds.coerceAtLeast(1)
+            val extension = exportSettings.format
+            val cacheFile = File(cacheDir, "echoclip-export-$timestamp-${safeSeconds}s.$extension")
+            val jobId = RustAudioCore.saveLatestToCache(
+                handle,
+                safeSeconds,
+                cacheFile.absolutePath,
+                exportSettings.format,
+                exportSettings.mp3BitrateKbps,
+                resolveFfmpegPath(),
+            )
+            if (jobId == 0L) {
+                return mapOf("saved" to false, "error" to "export_job_start_failed")
+            }
+
+            val exportStatus = waitForRustExport(handle, jobId)
+            if (exportStatus.state != "Finished") {
+                cacheFile.delete()
+                return mapOf(
+                    "saved" to false,
+                    "error" to "export_failed:${exportStatus.error ?: exportStatus.state}",
+                )
+            }
+
+            val durationSeconds = if (settings.sampleRate <= 0) {
+                0L
+            } else {
+                exportStatus.samplesWritten / settings.sampleRate
+            }
+            val displayName = "echoclip-$timestamp-${durationSeconds}s.$extension"
+            val parentDocumentUri = rootDocumentUri(folderUri)
+            val outputUri = DocumentsContract.createDocument(
+                contentResolver,
+                parentDocumentUri,
+                mimeTypeForAudioFormat(exportSettings.format),
+                displayName,
+            ) ?: run {
+                cacheFile.delete()
+                return mapOf("saved" to false, "error" to "create_document_failed")
+            }
+
+            try {
+                copyFileToDocument(contentResolver, cacheFile, outputUri)
+            } catch (error: Exception) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
+                cacheFile.delete()
+                return mapOf(
+                    "saved" to false,
+                    "error" to "write_failed:${error.javaClass.simpleName}:${error.message}",
+                )
+            }
+            cacheFile.delete()
+            mapOf(
+                "saved" to true,
+                "pending" to false,
+                "name" to displayName,
+                "uri" to outputUri.toString(),
+            )
+        } catch (error: Exception) {
+            mapOf(
+                "saved" to false,
+                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
+            )
+        } finally {
+            RustAudioCore.stopRecorder(handle)
+            RustAudioCore.destroy(handle)
+        }
+    }
+
+    private fun waitForRustExport(handle: Long, jobId: Long): RustExportStatus {
+        val started = SystemClock.elapsedRealtime()
+        var status = RustAudioCore.exportStatus(handle, jobId)
+        while (status.state == "Pending" || status.state == "Running") {
+            if (SystemClock.elapsedRealtime() - started > PROCESS_TIMEOUT_SECONDS * 1_000L) {
+                return status.copy(state = "Failed", error = "export_timeout")
+            }
+            Thread.sleep(100L)
+            status = RustAudioCore.exportStatus(handle, jobId)
+        }
+        return status
+    }
+
     private fun clearCache(): Map<String, Any?> {
         var deletedBytes = 0L
         deletedBytes += deleteChildren(cacheDir)
@@ -692,13 +825,41 @@ class MainActivity : FlutterActivity() {
             val runtimeTemp = File(filesDir, "echoclip-runtime/.echoclip/temp")
             deletedBytes += deleteChildren(runtimeTemp)
             replayCacheCleared = true
+            RecordingStorage.setLastSessionStartedUnixMillis(this, 0L)
+            RecordingStorage.setLastAvailableMillis(this, 0L)
         }
         return mapOf(
             "ok" to true,
             "deletedBytes" to deletedBytes,
+            "cacheBytes" to cacheBytes(),
             "replayCacheCleared" to replayCacheCleared,
             "activeReplayCachePreserved" to serviceRunning,
         )
+    }
+
+    private fun cacheStatus(): Map<String, Any?> {
+        return mapOf(
+            "ok" to true,
+            "cacheBytes" to cacheBytes(),
+            "activeReplayCachePreserved" to (ReplayForegroundService.activeService != null),
+        )
+    }
+
+    private fun cacheBytes(): Long {
+        val runtimeTemp = File(filesDir, "echoclip-runtime/.echoclip/temp")
+        return fileSize(cacheDir) + fileSize(runtimeTemp)
+    }
+
+    private fun openUrl(url: String?): Map<String, Any?> {
+        if (url.isNullOrBlank()) {
+            return mapOf("ok" to false, "error" to "missing_url")
+        }
+        return try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            mapOf("ok" to true)
+        } catch (error: Exception) {
+            mapOf("ok" to false, "error" to "open_url_failed:${error.javaClass.simpleName}")
+        }
     }
 
     private fun rootDocumentUri(treeUri: Uri): Uri {

@@ -30,14 +30,20 @@ object RecordingStorage {
     private const val KEY_BUFFER_SECONDS = "buffer_seconds"
     private const val KEY_EXPORT_FORMAT = "export_format"
     private const val KEY_MP3_BITRATE_KBPS = "mp3_bitrate_kbps"
+    private const val KEY_UI_LANGUAGE_MODE = "ui_language_mode"
+    private const val KEY_LAST_SESSION_STARTED_UNIX_MILLIS = "last_session_started_unix_millis"
+    private const val KEY_LAST_AVAILABLE_MILLIS = "last_available_millis"
     private const val DEFAULT_SAMPLE_RATE = 16_000
     private const val DEFAULT_BUFFER_SECONDS = 1_800
     private const val DEFAULT_EXPORT_FORMAT = "mp3"
     private const val DEFAULT_MP3_BITRATE_KBPS = 128
+    private const val DEFAULT_UI_LANGUAGE_MODE = "system"
     private val SAMPLE_RATE_OPTIONS = setOf(8_000, 16_000, 24_000, 48_000)
-    private val BUFFER_SECONDS_OPTIONS = setOf(600, 1_800, 3_600, 7_200, 18_000)
+    private const val MIN_BUFFER_SECONDS = 60
+    private const val MAX_BUFFER_SECONDS = 24 * 60 * 60
     private val EXPORT_FORMAT_OPTIONS = setOf("mp3", "wav")
     private val MP3_BITRATE_OPTIONS = setOf(32, 48, 64, 96, 128, 160, 192, 256, 320)
+    private val UI_LANGUAGE_MODE_OPTIONS = setOf("system", "en", "zh")
 
     fun setRecordingFolderUri(context: Context, uri: Uri) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -109,12 +115,53 @@ object RecordingStorage {
         return settings
     }
 
+    fun getUiLanguageMode(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return sanitizeUiLanguageMode(
+            prefs.getString(KEY_UI_LANGUAGE_MODE, DEFAULT_UI_LANGUAGE_MODE)
+                ?: DEFAULT_UI_LANGUAGE_MODE,
+        )
+    }
+
+    fun setUiLanguageMode(context: Context, mode: String): String {
+        val sanitized = sanitizeUiLanguageMode(mode)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_UI_LANGUAGE_MODE, sanitized)
+            .apply()
+        return sanitized
+    }
+
+    fun getLastSessionStartedUnixMillis(context: Context): Long {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getLong(KEY_LAST_SESSION_STARTED_UNIX_MILLIS, 0L)
+    }
+
+    fun setLastSessionStartedUnixMillis(context: Context, value: Long) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_SESSION_STARTED_UNIX_MILLIS, value.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun getLastAvailableMillis(context: Context): Long {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getLong(KEY_LAST_AVAILABLE_MILLIS, 0L).coerceAtLeast(0L)
+    }
+
+    fun setLastAvailableMillis(context: Context, value: Long) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_AVAILABLE_MILLIS, value.coerceAtLeast(0L))
+            .apply()
+    }
+
     private fun sanitizeSampleRate(value: Int): Int {
         return if (value in SAMPLE_RATE_OPTIONS) value else DEFAULT_SAMPLE_RATE
     }
 
     private fun sanitizeBufferSeconds(value: Int): Int {
-        return if (value in BUFFER_SECONDS_OPTIONS) value else DEFAULT_BUFFER_SECONDS
+        return value.coerceIn(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS)
     }
 
     private fun sanitizeExportFormat(value: String): String {
@@ -124,5 +171,10 @@ object RecordingStorage {
 
     private fun sanitizeMp3Bitrate(value: Int): Int {
         return if (value in MP3_BITRATE_OPTIONS) value else DEFAULT_MP3_BITRATE_KBPS
+    }
+
+    private fun sanitizeUiLanguageMode(value: String): String {
+        val normalized = value.lowercase()
+        return if (normalized in UI_LANGUAGE_MODE_OPTIONS) normalized else DEFAULT_UI_LANGUAGE_MODE
     }
 }
