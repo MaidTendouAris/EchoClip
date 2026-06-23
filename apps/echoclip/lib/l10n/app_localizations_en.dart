@@ -95,6 +95,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chooseFolder => 'Choose folder';
 
   @override
+  String get presetSaveDuration => 'Preset';
+
+  @override
+  String get customSaveDuration => 'Custom';
+
+  @override
+  String get customSaveSeconds => 'Save duration (seconds)';
+
+  @override
+  String get customSaveSecondsHelper => '1 to 86400 seconds';
+
+  @override
+  String get secondsUnit => 'sec';
+
+  @override
   String secondsShort(int seconds) {
     return '${seconds}s';
   }

@@ -242,6 +242,36 @@ abstract class AppLocalizations {
   /// **'Choose folder'**
   String get chooseFolder;
 
+  /// No description provided for @presetSaveDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Preset'**
+  String get presetSaveDuration;
+
+  /// No description provided for @customSaveDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom'**
+  String get customSaveDuration;
+
+  /// No description provided for @customSaveSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Save duration (seconds)'**
+  String get customSaveSeconds;
+
+  /// No description provided for @customSaveSecondsHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'1 to 86400 seconds'**
+  String get customSaveSecondsHelper;
+
+  /// No description provided for @secondsUnit.
+  ///
+  /// In en, this message translates to:
+  /// **'sec'**
+  String get secondsUnit;
+
   /// No description provided for @secondsShort.
   ///
   /// In en, this message translates to:

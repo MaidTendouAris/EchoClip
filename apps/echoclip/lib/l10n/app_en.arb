@@ -45,6 +45,11 @@
   "pause": "Pause",
   "resume": "Resume",
   "chooseFolder": "Choose folder",
+  "presetSaveDuration": "Preset",
+  "customSaveDuration": "Custom",
+  "customSaveSeconds": "Save duration (seconds)",
+  "customSaveSecondsHelper": "1 to 86400 seconds",
+  "secondsUnit": "sec",
   "secondsShort": "{seconds}s",
   "@secondsShort": {
     "placeholders": {

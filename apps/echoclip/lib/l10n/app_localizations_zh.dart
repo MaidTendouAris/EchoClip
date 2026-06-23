@@ -89,6 +89,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get chooseFolder => '选择目录';
 
   @override
+  String get presetSaveDuration => '预设';
+
+  @override
+  String get customSaveDuration => '自定义';
+
+  @override
+  String get customSaveSeconds => '保存时长（秒）';
+
+  @override
+  String get customSaveSecondsHelper => '1 到 86400 秒';
+
+  @override
+  String get secondsUnit => '秒';
+
+  @override
   String secondsShort(int seconds) {
     return '$seconds 秒';
   }

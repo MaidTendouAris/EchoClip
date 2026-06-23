@@ -6,10 +6,9 @@ Source asset:
 
 Design intent:
 
-- The rounded square base is calm and private, matching the product direction of low-distraction background audio.
-- The circular arrow represents the rolling buffer and instant replay behavior.
-- The waveform bars keep the icon tied to audio without making the product feel like a generic recorder.
-- The warm play/save marker highlights the moment when the user preserves a recent clip.
+- The rounded square uses a clean off-white tile so the icon stays simple at small sizes.
+- The waveform is the whole mark: no loop arrow, playback marker, or extra decoration.
+- The cyan-to-blue accent bar gives the minimal waveform a recognizable EchoClip identity.
 
 Suggested export targets:
 

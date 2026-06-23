@@ -1,52 +1,25 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">EchoClip icon</title>
-  <desc id="desc">A rounded app icon showing a circular instant replay loop around an audio waveform.</desc>
+  <desc id="desc">A minimal rounded app icon showing slim audio waveform bars with a bright EchoClip accent.</desc>
   <defs>
-    <linearGradient id="bg" x1="160" y1="96" x2="884" y2="928" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#122225"/>
-      <stop offset="0.58" stop-color="#174B4A"/>
-      <stop offset="1" stop-color="#102022"/>
+    <linearGradient id="tile" x1="218" y1="148" x2="774" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F2FAF9"/>
     </linearGradient>
-    <linearGradient id="loop" x1="244" y1="198" x2="777" y2="806" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7EE7D8"/>
-      <stop offset="0.52" stop-color="#21A59B"/>
-      <stop offset="1" stop-color="#F3B85C"/>
+    <linearGradient id="accent" x1="594" y1="274" x2="638" y2="750" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12E4D0"/>
+      <stop offset="1" stop-color="#2398FF"/>
     </linearGradient>
-    <linearGradient id="wave" x1="311" y1="332" x2="713" y2="704" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#EAF8F6"/>
-      <stop offset="1" stop-color="#A7E7DF"/>
-    </linearGradient>
-    <filter id="softShadow" x="80" y="72" width="864" height="888" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
-      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feColorMatrix in="SourceAlpha" result="hardAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"/>
-      <feOffset dy="28"/>
-      <feGaussianBlur stdDeviation="36"/>
-      <feComposite in2="hardAlpha" operator="out"/>
-      <feColorMatrix type="matrix" values="0 0 0 0 0.02 0 0 0 0 0.07 0 0 0 0 0.08 0 0 0 0.34 0"/>
-      <feBlend in2="BackgroundImageFix" mode="normal" result="effect1_dropShadow"/>
-      <feBlend in="SourceGraphic" in2="effect1_dropShadow" mode="normal" result="shape"/>
-    </filter>
   </defs>
 
-  <g filter="url(#softShadow)">
-    <rect x="128" y="96" width="768" height="768" rx="192" fill="url(#bg)"/>
-    <rect x="156" y="124" width="712" height="712" rx="168" stroke="#D4FFF8" stroke-opacity="0.1" stroke-width="4"/>
-  </g>
+  <rect x="96" y="96" width="832" height="832" rx="192" fill="url(#tile)"/>
+  <rect x="96" y="96" width="832" height="832" rx="192" stroke="#DDEBE9" stroke-width="8"/>
 
-  <path d="M737 365C685 271 575 219 468 239C338 263 249 385 273 515C292 619 373 698 475 718"
-        stroke="url(#loop)" stroke-linecap="round" stroke-width="56"/>
-  <path d="M672 297L750 357L690 435"
-        stroke="url(#loop)" stroke-linecap="round" stroke-linejoin="round" stroke-width="56"/>
-  <path d="M287 659C348 742 460 779 561 748C679 711 750 593 724 474"
-        stroke="#7EE7D8" stroke-linecap="round" stroke-opacity="0.28" stroke-width="42"/>
-
-  <rect x="326" y="438" width="52" height="148" rx="26" fill="url(#wave)"/>
-  <rect x="410" y="360" width="52" height="304" rx="26" fill="url(#wave)"/>
-  <rect x="494" y="304" width="52" height="416" rx="26" fill="url(#wave)"/>
-  <rect x="578" y="386" width="52" height="252" rx="26" fill="url(#wave)"/>
-  <rect x="662" y="464" width="52" height="96" rx="26" fill="url(#wave)"/>
-
-  <circle cx="512" cy="512" r="74" fill="#102022" fill-opacity="0.72"/>
-  <path d="M486 466L568 512L486 558V466Z" fill="#F4B35F"/>
-  <circle cx="512" cy="512" r="118" stroke="#EAF8F6" stroke-opacity="0.12" stroke-width="10"/>
+  <rect x="282" y="466" width="44" height="92" rx="22" fill="#CBD8DB"/>
+  <rect x="360" y="412" width="44" height="200" rx="22" fill="#566E79"/>
+  <rect x="438" y="346" width="44" height="332" rx="22" fill="#435B68"/>
+  <rect x="516" y="390" width="44" height="244" rx="22" fill="#566E79"/>
+  <rect x="594" y="274" width="44" height="476" rx="22" fill="url(#accent)"/>
+  <rect x="672" y="424" width="44" height="176" rx="22" fill="#B9C9CD"/>
+  <circle cx="772" cy="512" r="22" fill="#CBD8DB"/>
 </svg>

@@ -1009,7 +1009,6 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         platformStatus: _platformStatus,
         meterSnapshot: _meterSnapshot,
         folderSelected: _folderSelected,
-        onToggle: _toggleBuffering,
         onSave: _saveClip,
         onChooseFolder: _chooseRecordingFolder,
       ),
@@ -1053,7 +1052,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F8F7),
       appBar: AppBar(
-        title: const Text('EchoClip'),
+        title: Text(_appBarTitle(context, _section)),
         centerTitle: false,
         backgroundColor: const Color(0xFFF6F8F7),
         surfaceTintColor: Colors.transparent,
@@ -1064,6 +1063,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _section.index,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
         onDestinationSelected: (index) {
           setState(() => _section = AppSection.values[index]);
           if (AppSection.values[index] == AppSection.settings) {
@@ -1079,8 +1079,21 @@ class _EchoClipHomeState extends State<EchoClipHome> {
             ),
         ],
       ),
+      floatingActionButton: _section == AppSection.recorder
+          ? FloatingActionButton(
+              onPressed: _toggleBuffering,
+              tooltip: _isBuffering ? context.l10n.pause : context.l10n.resume,
+              child: Icon(_isBuffering ? Icons.pause : Icons.play_arrow),
+            )
+          : null,
     );
   }
+}
+
+String _appBarTitle(BuildContext context, AppSection section) {
+  return section == AppSection.recorder
+      ? context.l10n.appTitle
+      : _sectionLabel(context, section);
 }
 
 String _sectionLabel(BuildContext context, AppSection section) {
@@ -1216,7 +1229,6 @@ class _RecorderPage extends StatefulWidget {
     required this.platformStatus,
     required this.meterSnapshot,
     required this.folderSelected,
-    required this.onToggle,
     required this.onSave,
     required this.onChooseFolder,
   });
@@ -1225,7 +1237,6 @@ class _RecorderPage extends StatefulWidget {
   final String platformStatus;
   final ValueListenable<MeterSnapshot> meterSnapshot;
   final bool folderSelected;
-  final Future<void> Function() onToggle;
   final Future<void> Function(int seconds) onSave;
   final Future<void> Function() onChooseFolder;
 
@@ -1242,9 +1253,23 @@ class _RecorderPageState extends State<_RecorderPage> {
     SaveDurationOption(300),
     SaveDurationOption(600),
     SaveDurationOption(1800),
+    SaveDurationOption(3600),
+    SaveDurationOption(7200),
+    SaveDurationOption(18000),
+    SaveDurationOption(43200),
+    SaveDurationOption(86400),
   ];
 
   SaveDurationOption _selectedDuration = _durations[1];
+  SaveDurationMode _durationMode = SaveDurationMode.preset;
+  int _customDurationSeconds = 30;
+
+  int get _activeSaveSeconds {
+    return switch (_durationMode) {
+      SaveDurationMode.preset => _selectedDuration.seconds,
+      SaveDurationMode.custom => _customDurationSeconds,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1311,58 +1336,71 @@ class _RecorderPageState extends State<_RecorderPage> {
                           minimumSize: const Size(152, 56),
                         ),
                         onPressed: canSave
-                            ? () => widget.onSave(_selectedDuration.seconds)
+                            ? () => widget.onSave(_activeSaveSeconds)
                             : null,
                         icon: const Icon(Icons.save_alt),
                         label: Text(
                           l10n.saveClip(
-                            _formatDurationLabel(
-                              l10n,
-                              _selectedDuration.seconds,
-                            ),
+                            _formatDurationLabel(l10n, _activeSaveSeconds),
                           ),
                         ),
                       );
                     },
                   ),
-                  DropdownMenu<SaveDurationOption>(
-                    initialSelection: _selectedDuration,
-                    width: 168,
-                    leadingIcon: const Icon(Icons.timer_outlined),
-                    inputDecorationTheme: const InputDecorationTheme(
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12),
-                      constraints: BoxConstraints(minHeight: 56),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.all(Radius.circular(28)),
+                  SegmentedButton<SaveDurationMode>(
+                    segments: [
+                      ButtonSegment(
+                        value: SaveDurationMode.preset,
+                        icon: const Icon(Icons.timer_outlined),
+                        label: Text(l10n.presetSaveDuration),
                       ),
-                    ),
-                    onSelected: (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      setState(() {
-                        _selectedDuration = value;
-                      });
-                    },
-                    dropdownMenuEntries: [
-                      for (final option in _durations)
-                        DropdownMenuEntry(
-                          value: option,
-                          label: _formatDurationLabel(l10n, option.seconds),
-                        ),
+                      ButtonSegment(
+                        value: SaveDurationMode.custom,
+                        icon: const Icon(Icons.edit_calendar),
+                        label: Text(l10n.customSaveDuration),
+                      ),
                     ],
+                    selected: {_durationMode},
+                    onSelectionChanged: (values) {
+                      setState(() => _durationMode = values.first);
+                    },
                   ),
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(112, 56),
+                  if (_durationMode == SaveDurationMode.preset)
+                    DropdownMenu<SaveDurationOption>(
+                      initialSelection: _selectedDuration,
+                      width: 168,
+                      leadingIcon: const Icon(Icons.timer_outlined),
+                      inputDecorationTheme: const InputDecorationTheme(
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12),
+                        constraints: BoxConstraints(minHeight: 56),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(28)),
+                        ),
+                      ),
+                      onSelected: (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setState(() {
+                          _selectedDuration = value;
+                        });
+                      },
+                      dropdownMenuEntries: [
+                        for (final option in _durations)
+                          DropdownMenuEntry(
+                            value: option,
+                            label: _formatDurationLabel(l10n, option.seconds),
+                          ),
+                      ],
+                    )
+                  else
+                    _SaveSecondsField(
+                      seconds: _customDurationSeconds,
+                      onChanged: (seconds) {
+                        setState(() => _customDurationSeconds = seconds);
+                      },
                     ),
-                    onPressed: widget.onToggle,
-                    icon: Icon(
-                      widget.isBuffering ? Icons.pause : Icons.play_arrow,
-                    ),
-                    label: Text(widget.isBuffering ? l10n.pause : l10n.resume),
-                  ),
                   if (!widget.folderSelected)
                     OutlinedButton.icon(
                       onPressed: widget.onChooseFolder,
@@ -1595,33 +1633,6 @@ class LoudnessMeter extends StatelessWidget {
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Text(
-                l10n.silenceLabel,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF6C7472),
-                ),
-              ),
-              const Spacer(),
-              Text(
-                isRecording
-                    ? l10n.microphoneInputLabel
-                    : l10n.notRecordingLabel,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF6C7472),
-                ),
-              ),
-              const Spacer(),
-              Text(
-                l10n.peakLabel,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF6C7472),
-                ),
-              ),
-            ],
           ),
         ],
       ),
@@ -2458,11 +2469,6 @@ class _ProcessingPageState extends State<_ProcessingPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                l10n.processingTitle,
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 initialValue: _selectedUri,
                 isExpanded: true,
@@ -2751,11 +2757,6 @@ class _SettingsPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                l10n.settingsTitle,
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 16),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.folder),
@@ -2947,6 +2948,88 @@ class _Panel extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: child,
+    );
+  }
+}
+
+enum SaveDurationMode { preset, custom }
+
+class _SaveSecondsField extends StatefulWidget {
+  const _SaveSecondsField({required this.seconds, required this.onChanged});
+
+  final int seconds;
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_SaveSecondsField> createState() => _SaveSecondsFieldState();
+}
+
+class _SaveSecondsFieldState extends State<_SaveSecondsField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  int get _seconds => widget.seconds.clamp(1, 86400).toInt();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _seconds.toString());
+    _focusNode = FocusNode()..addListener(_handleFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SaveSecondsField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.seconds != widget.seconds && !_focusNode.hasFocus) {
+      _controller.text = _seconds.toString();
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_handleFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleFocusChange() {
+    if (!_focusNode.hasFocus) {
+      _applyValue();
+    }
+  }
+
+  void _applyValue() {
+    final parsed = int.tryParse(_controller.text.trim()) ?? _seconds;
+    final seconds = parsed.clamp(1, 86400).toInt();
+    _controller.text = seconds.toString();
+    if (seconds != _seconds) {
+      widget.onChanged(seconds);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return SizedBox(
+      width: 184,
+      child: TextField(
+        controller: _controller,
+        focusNode: _focusNode,
+        keyboardType: TextInputType.number,
+        textInputAction: TextInputAction.done,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        onSubmitted: (_) => _applyValue(),
+        decoration: InputDecoration(
+          labelText: l10n.customSaveSeconds,
+          helperText: l10n.customSaveSecondsHelper,
+          suffixText: l10n.secondsUnit,
+          prefixIcon: const Icon(Icons.timer_outlined),
+          border: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(28)),
+          ),
+        ),
+      ),
     );
   }
 }
