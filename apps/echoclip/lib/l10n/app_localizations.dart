@@ -218,6 +218,42 @@ abstract class AppLocalizations {
   /// **'{message} · Details: {detail}'**
   String recordingStatusWithDetail(Object message, Object detail);
 
+  /// No description provided for @standardRecordingMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard recording mode'**
+  String get standardRecordingMode;
+
+  /// No description provided for @lockRecordingMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording mode'**
+  String get lockRecordingMode;
+
+  /// No description provided for @lockRecordingStatusOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording mode is off'**
+  String get lockRecordingStatusOff;
+
+  /// No description provided for @lockRecordingStatusArmedScreenOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording armed. Recording starts when the screen turns off.'**
+  String get lockRecordingStatusArmedScreenOff;
+
+  /// No description provided for @lockRecordingStatusArmedKeyguard.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording armed. Recording starts when the phone is locked.'**
+  String get lockRecordingStatusArmedKeyguard;
+
+  /// No description provided for @lockRecordingStatusRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording is writing to the replay cache'**
+  String get lockRecordingStatusRecording;
+
   /// No description provided for @saveClip.
   ///
   /// In en, this message translates to:
@@ -589,6 +625,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Recording settings'**
   String get recordingSettings;
+
+  /// No description provided for @lockRecordingSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Lock screen recording'**
+  String get lockRecordingSettings;
+
+  /// No description provided for @lockRecordingTrigger.
+  ///
+  /// In en, this message translates to:
+  /// **'Trigger'**
+  String get lockRecordingTrigger;
+
+  /// No description provided for @lockRecordingTriggerScreenOff.
+  ///
+  /// In en, this message translates to:
+  /// **'When screen turns off'**
+  String get lockRecordingTriggerScreenOff;
+
+  /// No description provided for @lockRecordingTriggerKeyguard.
+  ///
+  /// In en, this message translates to:
+  /// **'When phone is locked'**
+  String get lockRecordingTriggerKeyguard;
 
   /// No description provided for @languageSettings.
   ///

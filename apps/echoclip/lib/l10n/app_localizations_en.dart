@@ -81,6 +81,27 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get standardRecordingMode => 'Standard recording mode';
+
+  @override
+  String get lockRecordingMode => 'Lock screen recording mode';
+
+  @override
+  String get lockRecordingStatusOff => 'Lock screen recording mode is off';
+
+  @override
+  String get lockRecordingStatusArmedScreenOff =>
+      'Lock screen recording armed. Recording starts when the screen turns off.';
+
+  @override
+  String get lockRecordingStatusArmedKeyguard =>
+      'Lock screen recording armed. Recording starts when the phone is locked.';
+
+  @override
+  String get lockRecordingStatusRecording =>
+      'Lock screen recording is writing to the replay cache';
+
+  @override
   String saveClip(Object duration) {
     return 'Save $duration';
   }
@@ -286,6 +307,18 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get recordingSettings => 'Recording settings';
+
+  @override
+  String get lockRecordingSettings => 'Lock screen recording';
+
+  @override
+  String get lockRecordingTrigger => 'Trigger';
+
+  @override
+  String get lockRecordingTriggerScreenOff => 'When screen turns off';
+
+  @override
+  String get lockRecordingTriggerKeyguard => 'When phone is locked';
 
   @override
   String get languageSettings => 'Language';

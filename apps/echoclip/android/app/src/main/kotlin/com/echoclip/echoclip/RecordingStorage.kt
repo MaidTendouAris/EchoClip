@@ -23,6 +23,16 @@ data class ExportSettings(
     )
 }
 
+data class RecordingModeSettings(
+    val mode: String,
+    val trigger: String,
+) {
+    fun toMap(): Map<String, Any> = mapOf(
+        "mode" to mode,
+        "trigger" to trigger,
+    )
+}
+
 object RecordingStorage {
     private const val PREFS_NAME = "echoclip_recording_storage"
     private const val KEY_FOLDER_URI = "folder_uri"
@@ -31,6 +41,8 @@ object RecordingStorage {
     private const val KEY_EXPORT_FORMAT = "export_format"
     private const val KEY_MP3_BITRATE_KBPS = "mp3_bitrate_kbps"
     private const val KEY_UI_LANGUAGE_MODE = "ui_language_mode"
+    private const val KEY_RECORDING_MODE = "recording_mode"
+    private const val KEY_LOCK_RECORDING_TRIGGER = "lock_recording_trigger"
     private const val KEY_LAST_SESSION_STARTED_UNIX_MILLIS = "last_session_started_unix_millis"
     private const val KEY_LAST_AVAILABLE_MILLIS = "last_available_millis"
     private const val DEFAULT_SAMPLE_RATE = 16_000
@@ -38,12 +50,16 @@ object RecordingStorage {
     private const val DEFAULT_EXPORT_FORMAT = "mp3"
     private const val DEFAULT_MP3_BITRATE_KBPS = 128
     private const val DEFAULT_UI_LANGUAGE_MODE = "system"
+    private const val DEFAULT_RECORDING_MODE = "standard"
+    private const val DEFAULT_LOCK_RECORDING_TRIGGER = "screen_off"
     private val SAMPLE_RATE_OPTIONS = setOf(8_000, 16_000, 24_000, 48_000)
     private const val MIN_BUFFER_SECONDS = 60
     private const val MAX_BUFFER_SECONDS = 24 * 60 * 60
     private val EXPORT_FORMAT_OPTIONS = setOf("mp3", "wav")
     private val MP3_BITRATE_OPTIONS = setOf(32, 48, 64, 96, 128, 160, 192, 256, 320)
     private val UI_LANGUAGE_MODE_OPTIONS = setOf("system", "en", "zh")
+    private val RECORDING_MODE_OPTIONS = setOf("standard", "lockscreen")
+    private val LOCK_RECORDING_TRIGGER_OPTIONS = setOf("screen_off", "keyguard_locked")
 
     fun setRecordingFolderUri(context: Context, uri: Uri) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -132,6 +148,37 @@ object RecordingStorage {
         return sanitized
     }
 
+    fun getRecordingModeSettings(context: Context): RecordingModeSettings {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return RecordingModeSettings(
+            sanitizeRecordingMode(
+                prefs.getString(KEY_RECORDING_MODE, DEFAULT_RECORDING_MODE)
+                    ?: DEFAULT_RECORDING_MODE,
+            ),
+            sanitizeLockRecordingTrigger(
+                prefs.getString(KEY_LOCK_RECORDING_TRIGGER, DEFAULT_LOCK_RECORDING_TRIGGER)
+                    ?: DEFAULT_LOCK_RECORDING_TRIGGER,
+            ),
+        )
+    }
+
+    fun setRecordingModeSettings(
+        context: Context,
+        mode: String,
+        trigger: String,
+    ): RecordingModeSettings {
+        val settings = RecordingModeSettings(
+            sanitizeRecordingMode(mode),
+            sanitizeLockRecordingTrigger(trigger),
+        )
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_RECORDING_MODE, settings.mode)
+            .putString(KEY_LOCK_RECORDING_TRIGGER, settings.trigger)
+            .apply()
+        return settings
+    }
+
     fun getLastSessionStartedUnixMillis(context: Context): Long {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getLong(KEY_LAST_SESSION_STARTED_UNIX_MILLIS, 0L)
@@ -176,5 +223,19 @@ object RecordingStorage {
     private fun sanitizeUiLanguageMode(value: String): String {
         val normalized = value.lowercase()
         return if (normalized in UI_LANGUAGE_MODE_OPTIONS) normalized else DEFAULT_UI_LANGUAGE_MODE
+    }
+
+    private fun sanitizeRecordingMode(value: String): String {
+        val normalized = value.lowercase()
+        return if (normalized in RECORDING_MODE_OPTIONS) normalized else DEFAULT_RECORDING_MODE
+    }
+
+    private fun sanitizeLockRecordingTrigger(value: String): String {
+        val normalized = value.lowercase()
+        return if (normalized in LOCK_RECORDING_TRIGGER_OPTIONS) {
+            normalized
+        } else {
+            DEFAULT_LOCK_RECORDING_TRIGGER
+        }
     }
 }

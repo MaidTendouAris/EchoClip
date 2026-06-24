@@ -41,6 +41,44 @@ enum UiLanguageMode {
   }
 }
 
+enum RecordingMode {
+  standard,
+  lockscreen;
+
+  String get storageValue {
+    return switch (this) {
+      RecordingMode.standard => 'standard',
+      RecordingMode.lockscreen => 'lockscreen',
+    };
+  }
+
+  static RecordingMode fromStorageValue(String? value) {
+    return switch (value) {
+      'lockscreen' => RecordingMode.lockscreen,
+      _ => RecordingMode.standard,
+    };
+  }
+}
+
+enum LockRecordingTrigger {
+  screenOff,
+  keyguardLocked;
+
+  String get storageValue {
+    return switch (this) {
+      LockRecordingTrigger.screenOff => 'screen_off',
+      LockRecordingTrigger.keyguardLocked => 'keyguard_locked',
+    };
+  }
+
+  static LockRecordingTrigger fromStorageValue(String? value) {
+    return switch (value) {
+      'keyguard_locked' => LockRecordingTrigger.keyguardLocked,
+      _ => LockRecordingTrigger.screenOff,
+    };
+  }
+}
+
 class EchoClipApp extends StatefulWidget {
   const EchoClipApp({super.key});
 
@@ -174,11 +212,15 @@ class _EchoClipHomeState extends State<EchoClipHome> {
   Timer? _meterTimer;
   bool _meterPollInFlight = false;
   bool _isBuffering = defaultTargetPlatform != TargetPlatform.android;
+  bool _serviceActive = defaultTargetPlatform != TargetPlatform.android;
   bool _folderSelected = defaultTargetPlatform != TargetPlatform.android;
   String? _folderUri;
   int _sampleRate = 16000;
   int _bufferSeconds = 1800;
   int _cacheBytes = 0;
+  RecordingMode _recordingMode = RecordingMode.standard;
+  LockRecordingTrigger _lockRecordingTrigger = LockRecordingTrigger.screenOff;
+  String _evidenceState = 'off';
   String _platformStatus = defaultTargetPlatform == TargetPlatform.android
       ? 'Android service stopped'
       : 'Windows demo mode';
@@ -237,6 +279,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
 
     await _refreshRecordingFolder(promptIfMissing: true);
     await _loadAudioSettings();
+    await _loadRecordingModeSettings();
     await _loadCacheStatus();
     await _loadRecordings();
     await _refreshReplayStatus();
@@ -262,6 +305,109 @@ class _EchoClipHomeState extends State<EchoClipHome> {
           ? response['bufferSeconds'] as int
           : _bufferSeconds;
     });
+  }
+
+  Future<void> _loadRecordingModeSettings() async {
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    final response = await _replayChannel.invokeMapMethod<String, Object?>(
+      'getRecordingModeSettings',
+    );
+    if (!mounted || response == null) {
+      return;
+    }
+
+    setState(() {
+      _recordingMode = RecordingMode.fromStorageValue(
+        response['mode']?.toString(),
+      );
+      _lockRecordingTrigger = LockRecordingTrigger.fromStorageValue(
+        response['trigger']?.toString(),
+      );
+    });
+  }
+
+  Future<void> _setRecordingMode(RecordingMode mode) async {
+    if (_recordingMode == mode) {
+      return;
+    }
+
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      setState(() {
+        _recordingMode = mode;
+        _platformStatus = context.l10n.windowsDemoMode;
+      });
+      return;
+    }
+
+    final previousMode = _recordingMode;
+    setState(() {
+      _recordingMode = mode;
+      _platformStatus = _recordingModeStatusText(context.l10n);
+    });
+
+    try {
+      await _replayChannel.invokeMapMethod<String, Object?>(
+        'setRecordingModeSettings',
+        {
+          'mode': mode.storageValue,
+          'trigger': _lockRecordingTrigger.storageValue,
+        },
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _platformStatus = _serviceActive
+            ? context.l10n.settingsSavedNextRecording
+            : _recordingModeStatusText(context.l10n);
+      });
+    } on PlatformException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _recordingMode = previousMode;
+        _platformStatus = context.l10n.androidServiceError(error.code);
+      });
+    }
+  }
+
+  Future<void> _setLockRecordingTrigger(LockRecordingTrigger trigger) async {
+    if (_lockRecordingTrigger == trigger) {
+      return;
+    }
+
+    setState(() {
+      _lockRecordingTrigger = trigger;
+      _platformStatus = _recordingModeStatusText(context.l10n);
+    });
+
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    try {
+      await _replayChannel.invokeMapMethod<String, Object?>(
+        'setRecordingModeSettings',
+        {'mode': _recordingMode.storageValue, 'trigger': trigger.storageValue},
+      );
+      if (_recordingMode == RecordingMode.lockscreen && _serviceActive) {
+        await _replayChannel.invokeMapMethod<String, Object?>('startReplay', {
+          'mode': _recordingMode.storageValue,
+          'trigger': trigger.storageValue,
+        });
+      }
+    } on PlatformException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _platformStatus = context.l10n.androidServiceError(error.code);
+      });
+    }
   }
 
   Future<void> _updateAudioSettings({
@@ -369,6 +515,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       }
 
       final running = response?['running'] == true;
+      final serviceActive = response?['serviceActive'] == true;
       final availableSeconds = response?['availableSeconds'];
       final availableMillis = response?['availableMillis'];
       final captureError = response?['captureError'];
@@ -379,9 +526,21 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       final l10n = context.l10n;
       setState(() {
         _isBuffering = running;
+        _serviceActive = serviceActive;
+        _recordingMode = RecordingMode.fromStorageValue(
+          response?['recordingMode']?.toString(),
+        );
+        _lockRecordingTrigger = LockRecordingTrigger.fromStorageValue(
+          response?['lockRecordingTrigger']?.toString(),
+        );
+        _evidenceState = response?['evidenceState']?.toString() ?? 'off';
         _platformStatus = _friendlyRecordingStatus(
           l10n: l10n,
           running: running,
+          serviceActive: serviceActive,
+          recordingMode: _recordingMode,
+          lockRecordingTrigger: _lockRecordingTrigger,
+          evidenceState: _evidenceState,
           rawError: captureError?.toString(),
         );
         if (sampleRate is int) {
@@ -419,6 +578,55 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         _platformStatus = context.l10n.androidServiceError(error.code);
       });
     }
+  }
+
+  void _applyReplayStatusResponse(Map<String, Object?>? response) {
+    if (response == null) {
+      return;
+    }
+    final running = response['running'] == true;
+    final serviceActive = response.containsKey('serviceActive')
+        ? response['serviceActive'] == true
+        : running;
+    final error = response['error'];
+    setState(() {
+      _isBuffering = running;
+      _serviceActive = serviceActive;
+      if (response.containsKey('recordingMode')) {
+        _recordingMode = RecordingMode.fromStorageValue(
+          response['recordingMode']?.toString(),
+        );
+      }
+      if (response.containsKey('lockRecordingTrigger')) {
+        _lockRecordingTrigger = LockRecordingTrigger.fromStorageValue(
+          response['lockRecordingTrigger']?.toString(),
+        );
+      }
+      if (response.containsKey('evidenceState')) {
+        _evidenceState = response['evidenceState']?.toString() ?? 'off';
+      } else if (!serviceActive) {
+        _evidenceState = 'off';
+      }
+      _platformStatus = error == null
+          ? _recordingModeStatusText(context.l10n)
+          : context.l10n.androidServiceError(error.toString());
+    });
+  }
+
+  String _recordingModeStatusText(AppLocalizations l10n) {
+    if (_recordingMode == RecordingMode.standard) {
+      return _isBuffering
+          ? l10n.recordingStatusNormal
+          : l10n.recordingStatusPaused;
+    }
+    return switch (_evidenceState) {
+      'recording' => l10n.lockRecordingStatusRecording,
+      'armed' =>
+        _lockRecordingTrigger == LockRecordingTrigger.keyguardLocked
+            ? l10n.lockRecordingStatusArmedKeyguard
+            : l10n.lockRecordingStatusArmedScreenOff,
+      _ => l10n.lockRecordingStatusOff,
+    };
   }
 
   void _tickMeter() {
@@ -472,6 +680,7 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       }
 
       final running = response['running'] == true;
+      final serviceActive = response['serviceActive'] == true;
       final recordedMillis = response['availableMillis'];
       final sessionStartedUnixMillis = response['sessionStartedUnixMillis'];
       final level = response['level'];
@@ -489,9 +698,19 @@ class _EchoClipHomeState extends State<EchoClipHome> {
             ? peakLevel.toDouble()
             : _meterSnapshot.value.peakLevel,
       );
-      if (running != _isBuffering && mounted) {
+      if ((running != _isBuffering || serviceActive != _serviceActive) &&
+          mounted) {
         setState(() {
           _isBuffering = running;
+          _serviceActive = serviceActive;
+          _recordingMode = RecordingMode.fromStorageValue(
+            response['recordingMode']?.toString(),
+          );
+          _lockRecordingTrigger = LockRecordingTrigger.fromStorageValue(
+            response['lockRecordingTrigger']?.toString(),
+          );
+          _evidenceState = response['evidenceState']?.toString() ?? 'off';
+          _platformStatus = _recordingModeStatusText(context.l10n);
         });
       }
     } on PlatformException {
@@ -569,23 +788,25 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
 
     try {
-      final method = _isBuffering ? 'stopReplay' : 'startReplay';
+      final lockscreenMode = _recordingMode == RecordingMode.lockscreen;
+      final shouldStop = lockscreenMode ? _serviceActive : _isBuffering;
+      final method = shouldStop ? 'stopReplay' : 'startReplay';
+      final arguments = shouldStop
+          ? null
+          : {
+              'mode': _recordingMode.storageValue,
+              'trigger': _lockRecordingTrigger.storageValue,
+            };
       final response = await _replayChannel.invokeMapMethod<String, Object?>(
         method,
+        arguments,
       );
       if (!mounted) {
         return;
       }
 
+      _applyReplayStatusResponse(response);
       final running = response?['running'] == true;
-      final error = response?['error'];
-      final l10n = context.l10n;
-      setState(() {
-        _isBuffering = running;
-        _platformStatus = error == null
-            ? _friendlyRecordingStatus(l10n: l10n, running: running)
-            : l10n.androidServiceError(error.toString());
-      });
       _updateMeterSnapshot(
         running: running,
         recordedMillis: _meterSnapshot.value.recordedMillis,
@@ -1001,6 +1222,27 @@ class _EchoClipHomeState extends State<EchoClipHome> {
     }
   }
 
+  Widget _recordingModeMenu(BuildContext context) {
+    final l10n = context.l10n;
+    return PopupMenuButton<RecordingMode>(
+      initialValue: _recordingMode,
+      tooltip: _recordingModeLabel(l10n, _recordingMode),
+      onSelected: _setRecordingMode,
+      itemBuilder: (context) => [
+        for (final mode in RecordingMode.values)
+          PopupMenuItem(
+            value: mode,
+            child: Text(_recordingModeLabel(l10n, mode)),
+          ),
+      ],
+      child: Chip(
+        avatar: const Icon(Icons.swap_horiz, size: 18),
+        label: Text(_recordingModeLabel(l10n, _recordingMode)),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = switch (_section) {
@@ -1040,9 +1282,11 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         sampleRate: _sampleRate,
         bufferSeconds: _bufferSeconds,
         cacheBytes: _cacheBytes,
+        lockRecordingTrigger: _lockRecordingTrigger,
         languageMode: widget.languageMode,
         onChooseFolder: _chooseRecordingFolder,
         onUpdateAudioSettings: _updateAudioSettings,
+        onLockRecordingTriggerChanged: _setLockRecordingTrigger,
         onClearCache: _clearCache,
         onLanguageModeChanged: widget.onLanguageModeChanged,
         onOpenUrl: _openExternalUrl,
@@ -1057,6 +1301,13 @@ class _EchoClipHomeState extends State<EchoClipHome> {
         backgroundColor: const Color(0xFFF6F8F7),
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
+        actions: [
+          if (_section == AppSection.recorder)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: _recordingModeMenu(context),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Padding(padding: const EdgeInsets.all(20), child: content),
@@ -1082,8 +1333,19 @@ class _EchoClipHomeState extends State<EchoClipHome> {
       floatingActionButton: _section == AppSection.recorder
           ? FloatingActionButton(
               onPressed: _toggleBuffering,
-              tooltip: _isBuffering ? context.l10n.pause : context.l10n.resume,
-              child: Icon(_isBuffering ? Icons.pause : Icons.play_arrow),
+              tooltip:
+                  (_recordingMode == RecordingMode.lockscreen
+                      ? _serviceActive
+                      : _isBuffering)
+                  ? context.l10n.pause
+                  : context.l10n.resume,
+              child: Icon(
+                (_recordingMode == RecordingMode.lockscreen
+                        ? _serviceActive
+                        : _isBuffering)
+                    ? Icons.pause
+                    : Icons.play_arrow,
+              ),
             )
           : null,
     );
@@ -1114,13 +1376,37 @@ String _languageModeLabel(AppLocalizations l10n, UiLanguageMode mode) {
   };
 }
 
+String _recordingModeLabel(AppLocalizations l10n, RecordingMode mode) {
+  return switch (mode) {
+    RecordingMode.standard => l10n.standardRecordingMode,
+    RecordingMode.lockscreen => l10n.lockRecordingMode,
+  };
+}
+
 String _friendlyRecordingStatus({
   required AppLocalizations l10n,
   required bool running,
+  bool serviceActive = false,
+  RecordingMode recordingMode = RecordingMode.standard,
+  LockRecordingTrigger lockRecordingTrigger = LockRecordingTrigger.screenOff,
+  String evidenceState = 'off',
   String? rawError,
 }) {
   final normalizedError = _normalizeNativeDetail(rawError);
   if (normalizedError == null) {
+    if (recordingMode == RecordingMode.lockscreen) {
+      return switch (evidenceState) {
+        'recording' => l10n.lockRecordingStatusRecording,
+        'armed' =>
+          lockRecordingTrigger == LockRecordingTrigger.keyguardLocked
+              ? l10n.lockRecordingStatusArmedKeyguard
+              : l10n.lockRecordingStatusArmedScreenOff,
+        _ =>
+          serviceActive
+              ? l10n.lockRecordingStatusArmedScreenOff
+              : l10n.lockRecordingStatusOff,
+      };
+    }
     return running ? l10n.recordingStatusNormal : l10n.recordingStatusPaused;
   }
 
@@ -2720,9 +3006,11 @@ class _SettingsPage extends StatelessWidget {
     required this.sampleRate,
     required this.bufferSeconds,
     required this.cacheBytes,
+    required this.lockRecordingTrigger,
     required this.languageMode,
     required this.onChooseFolder,
     required this.onUpdateAudioSettings,
+    required this.onLockRecordingTriggerChanged,
     required this.onClearCache,
     required this.onLanguageModeChanged,
     required this.onOpenUrl,
@@ -2738,10 +3026,13 @@ class _SettingsPage extends StatelessWidget {
   final int sampleRate;
   final int bufferSeconds;
   final int cacheBytes;
+  final LockRecordingTrigger lockRecordingTrigger;
   final UiLanguageMode languageMode;
   final Future<void> Function() onChooseFolder;
   final Future<void> Function({int? sampleRate, int? bufferSeconds})
   onUpdateAudioSettings;
+  final Future<void> Function(LockRecordingTrigger trigger)
+  onLockRecordingTriggerChanged;
   final Future<Map<String, Object?>> Function() onClearCache;
   final Future<void> Function(UiLanguageMode mode) onLanguageModeChanged;
   final Future<void> Function(String url) onOpenUrl;
@@ -2844,6 +3135,38 @@ class _SettingsPage extends StatelessWidget {
                 subtitle: Text(
                   l10n.pcmBufferSubtitle(_formatHertz(sampleRate)),
                 ),
+              ),
+              const Divider(height: 28),
+              Text(
+                l10n.lockRecordingSettings,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<LockRecordingTrigger>(
+                initialValue: lockRecordingTrigger,
+                decoration: InputDecoration(
+                  labelText: l10n.lockRecordingTrigger,
+                  prefixIcon: const Icon(Icons.screen_lock_portrait),
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                  ),
+                ),
+                items: [
+                  DropdownMenuItem(
+                    value: LockRecordingTrigger.screenOff,
+                    child: Text(l10n.lockRecordingTriggerScreenOff),
+                  ),
+                  DropdownMenuItem(
+                    value: LockRecordingTrigger.keyguardLocked,
+                    child: Text(l10n.lockRecordingTriggerKeyguard),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  onLockRecordingTriggerChanged(value);
+                },
               ),
               const Divider(height: 28),
               Text(

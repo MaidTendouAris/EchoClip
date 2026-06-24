@@ -75,6 +75,24 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String get standardRecordingMode => '标准录音模式';
+
+  @override
+  String get lockRecordingMode => '锁屏录音模式';
+
+  @override
+  String get lockRecordingStatusOff => '锁屏录音模式未启动';
+
+  @override
+  String get lockRecordingStatusArmedScreenOff => '锁屏录音模式待命中，黑屏后自动录音';
+
+  @override
+  String get lockRecordingStatusArmedKeyguard => '锁屏录音模式待命中，手机锁定后自动录音';
+
+  @override
+  String get lockRecordingStatusRecording => '锁屏录音正在写入回放缓存';
+
+  @override
   String saveClip(Object duration) {
     return '保存 $duration';
   }
@@ -277,6 +295,18 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get recordingSettings => '录制设置';
+
+  @override
+  String get lockRecordingSettings => '锁屏录音';
+
+  @override
+  String get lockRecordingTrigger => '触发条件';
+
+  @override
+  String get lockRecordingTriggerScreenOff => '屏幕关闭时';
+
+  @override
+  String get lockRecordingTriggerKeyguard => '手机锁定时';
 
   @override
   String get languageSettings => '语言';

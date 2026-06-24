@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit
 class MainActivity : FlutterActivity() {
     private val channelName = "com.echoclip/replay_service"
     private var pendingStartResult: MethodChannel.Result? = null
+    private var pendingStartMode: String? = null
+    private var pendingStartTrigger: String? = null
     private var pendingFolderResult: MethodChannel.Result? = null
     private var mediaPlayer: MediaPlayer? = null
     private var playingUri: String? = null
@@ -85,6 +87,26 @@ class MainActivity : FlutterActivity() {
                         val mode = call.argument<String>("mode") ?: "system"
                         result.success(
                             mapOf("mode" to RecordingStorage.setUiLanguageMode(this, mode)),
+                        )
+                    }
+                    "getRecordingModeSettings" -> {
+                        result.success(RecordingStorage.getRecordingModeSettings(this).toMap())
+                    }
+                    "setRecordingModeSettings" -> {
+                        val current = RecordingStorage.getRecordingModeSettings(this)
+                        val mode = call.argument<String>("mode") ?: current.mode
+                        val trigger = call.argument<String>("trigger") ?: current.trigger
+                        val settings = RecordingStorage.setRecordingModeSettings(
+                            this,
+                            mode,
+                            trigger,
+                        )
+                        result.success(
+                            settings.toMap() + mapOf(
+                                "running" to (ReplayForegroundService.activeService?.status()
+                                    ?.get("running") ?: false),
+                                "serviceActive" to (ReplayForegroundService.activeService != null),
+                            ),
                         )
                     }
                     "chooseRecordingFolder" -> chooseRecordingFolder(result)
@@ -159,7 +181,11 @@ class MainActivity : FlutterActivity() {
                         result.success(setPlaybackSpeed(speed))
                     }
                     "getPlaybackStatus" -> result.success(playbackStatus())
-                    "startReplay" -> startReplay(result)
+                    "startReplay" -> {
+                        val mode = call.argument<String>("mode")
+                        val trigger = call.argument<String>("trigger")
+                        startReplay(result, mode, trigger)
+                    }
                         "saveReplayClip" -> {
                             val seconds = call.argument<Int>("seconds") ?: 30
                             val service = ReplayForegroundService.activeService
@@ -189,9 +215,14 @@ class MainActivity : FlutterActivity() {
                         }
                         "getReplayStatus" -> {
                             val service = ReplayForegroundService.activeService
+                            val modeSettings = RecordingStorage.getRecordingModeSettings(this)
                             result.success(
                                 service?.status() ?: mapOf(
                                     "running" to false,
+                                    "serviceActive" to false,
+                                    "recordingMode" to modeSettings.mode,
+                                    "lockRecordingTrigger" to modeSettings.trigger,
+                                    "evidenceState" to "off",
                                     "availableSeconds" to
                                         (RecordingStorage.getLastAvailableMillis(this) / 1_000L)
                                             .toInt(),
@@ -208,9 +239,14 @@ class MainActivity : FlutterActivity() {
                         }
                         "getMeterStatus" -> {
                             val service = ReplayForegroundService.activeService
+                            val modeSettings = RecordingStorage.getRecordingModeSettings(this)
                             result.success(
                                 service?.meterStatus() ?: mapOf(
                                     "running" to false,
+                                    "serviceActive" to false,
+                                    "recordingMode" to modeSettings.mode,
+                                    "lockRecordingTrigger" to modeSettings.trigger,
+                                    "evidenceState" to "off",
                                     "availableMillis" to
                                         RecordingStorage.getLastAvailableMillis(this),
                                     "sessionStartedUnixMillis" to
@@ -302,23 +338,32 @@ class MainActivity : FlutterActivity() {
         startActivityForResult(intent, REQUEST_RECORDING_FOLDER)
     }
 
-    private fun startReplay(result: MethodChannel.Result) {
+    private fun startReplay(
+        result: MethodChannel.Result,
+        mode: String? = null,
+        trigger: String? = null,
+    ) {
         val missingPermissions = requiredPermissions().filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
 
         if (missingPermissions.isNotEmpty()) {
             pendingStartResult = result
+            pendingStartMode = mode
+            pendingStartTrigger = trigger
             requestPermissions(missingPermissions.toTypedArray(), REQUEST_REPLAY_PERMISSIONS)
             return
         }
 
-        startReplayService()
-        result.success(mapOf("running" to true))
+        startReplayService(mode, trigger)
+        result.success(startReplayResult(mode, trigger))
     }
 
-    private fun startReplayService() {
-        val intent = Intent(this, ReplayForegroundService::class.java)
+    private fun startReplayService(mode: String? = null, trigger: String? = null) {
+        val intent = Intent(this, ReplayForegroundService::class.java).apply {
+            mode?.let { putExtra(ReplayForegroundService.EXTRA_RECORDING_MODE, it) }
+            trigger?.let { putExtra(ReplayForegroundService.EXTRA_LOCK_RECORDING_TRIGGER, it) }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -340,11 +385,15 @@ class MainActivity : FlutterActivity() {
             it == PackageManager.PERMISSION_GRANTED
         }
         val result = pendingStartResult ?: return
+        val mode = pendingStartMode
+        val trigger = pendingStartTrigger
         pendingStartResult = null
+        pendingStartMode = null
+        pendingStartTrigger = null
 
         if (granted) {
-            startReplayService()
-            result.success(mapOf("running" to true))
+            startReplayService(mode, trigger)
+            result.success(startReplayResult(mode, trigger))
         } else {
             result.success(
                 mapOf(
@@ -353,6 +402,20 @@ class MainActivity : FlutterActivity() {
                 ),
             )
         }
+    }
+
+    private fun startReplayResult(mode: String?, trigger: String?): Map<String, Any?> {
+        val settings = RecordingStorage.getRecordingModeSettings(this)
+        val resolvedMode = mode ?: settings.mode
+        val resolvedTrigger = trigger ?: settings.trigger
+        val lockscreen = resolvedMode == ReplayForegroundService.MODE_LOCKSCREEN
+        return mapOf(
+            "running" to !lockscreen,
+            "serviceActive" to true,
+            "recordingMode" to resolvedMode,
+            "lockRecordingTrigger" to resolvedTrigger,
+            "evidenceState" to if (lockscreen) "armed" else "off",
+        )
     }
 
     @Deprecated("Deprecated in Android API")

@@ -36,6 +36,12 @@
       "detail": {}
     }
   },
+  "standardRecordingMode": "Standard recording mode",
+  "lockRecordingMode": "Lock screen recording mode",
+  "lockRecordingStatusOff": "Lock screen recording mode is off",
+  "lockRecordingStatusArmedScreenOff": "Lock screen recording armed. Recording starts when the screen turns off.",
+  "lockRecordingStatusArmedKeyguard": "Lock screen recording armed. Recording starts when the phone is locked.",
+  "lockRecordingStatusRecording": "Lock screen recording is writing to the replay cache",
   "saveClip": "Save {duration}",
   "@saveClip": {
     "placeholders": {
@@ -156,6 +162,10 @@
   "notSelected": "Not selected",
   "change": "Change",
   "recordingSettings": "Recording settings",
+  "lockRecordingSettings": "Lock screen recording",
+  "lockRecordingTrigger": "Trigger",
+  "lockRecordingTriggerScreenOff": "When screen turns off",
+  "lockRecordingTriggerKeyguard": "When phone is locked",
   "languageSettings": "Language",
   "appLanguage": "App language",
   "followSystemLanguage": "Follow system",
