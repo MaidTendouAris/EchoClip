@@ -31,3 +31,7 @@ For product direction, platform constraints, Rust core boundaries, FFmpeg export
 - [Icon Design](docs/ICON_DESIGN.md)
 
 See [LICENSE](LICENSE) for licensing.
+
+---
+
+说实话v0.4.0增加的锁屏录音挺阴的，属于是钻了安卓系统的空子。关于桌面端app暂时应该是不会做了，桌面系统用不太上这个，就先专心搞Android了。如果需要更隐蔽的录音还是自己root改系统吧，软件做这个权限不够，用无障碍做也不合规。
