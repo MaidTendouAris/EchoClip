@@ -24,6 +24,13 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // EchoClip's Rust audio core and packaged FFmpeg binary are built for
+        // Android arm64 only. Keep Flutter's engine/app libraries on the same
+        // ABI so the APK cannot advertise unsupported 32-bit or x86 devices.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {

@@ -79,8 +79,9 @@ Expand-SourceArchive `
     -DestinationName "ffmpeg"
 
 $lameArchive = Join-Path $downloadsRoot "lame-$LameVersion.tar.gz"
+$lameUrl = "https://download.videolan.org/pub/contrib/lame/lame-$LameVersion.tar.gz"
 Download-File `
-    -Url "https://downloads.sourceforge.net/project/lame/lame/$LameVersion/lame-$LameVersion.tar.gz" `
+    -Url $lameUrl `
     -OutFile $lameArchive
 Expand-SourceArchive `
     -Archive $lameArchive `
@@ -90,7 +91,7 @@ Expand-SourceArchive `
 $versionsFile = Join-Path $thirdPartyRoot "versions.local.txt"
 @(
     "FFmpeg $FfmpegVersion https://ffmpeg.org/releases/ffmpeg-$FfmpegVersion.tar.xz",
-    "LAME $LameVersion https://downloads.sourceforge.net/project/lame/lame/$LameVersion/lame-$LameVersion.tar.gz",
+    "LAME $LameVersion $lameUrl",
     "MSYS2 portable https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe"
 ) | Set-Content -Path $versionsFile -Encoding UTF8
 

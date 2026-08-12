@@ -1,6 +1,9 @@
 {
   "@@locale": "en",
   "appTitle": "EchoClip",
+  "showWindow": "Show window",
+  "hideWindow": "Hide window",
+  "exitApp": "Exit EchoClip",
   "navHome": "Home",
   "navLibrary": "Recordings",
   "navProcessing": "Processing",
@@ -23,7 +26,7 @@
   },
   "recordingStatusNormal": "Recording normally",
   "recordingStatusPaused": "Recording is paused",
-  "recordingStatusPermissionLost": "Microphone permission is unavailable. Check Android permissions.",
+  "recordingStatusPermissionLost": "Microphone permission is unavailable. Check the system privacy settings.",
   "recordingStatusStorageLow": "Internal storage is low. Free some space before recording.",
   "recordingStatusAudioUnavailable": "Microphone initialization failed. Another app may be using it.",
   "recordingStatusQueueBusy": "Audio buffer is busy. Recording may drop a little audio.",
@@ -162,6 +165,27 @@
   "notSelected": "Not selected",
   "change": "Change",
   "recordingSettings": "Recording settings",
+  "audioSources": "Audio sources",
+  "audioSourcesDescription": "Choose one or both sources. EchoClip mixes them into the same replay buffer.",
+  "recordMicrophone": "Record microphone",
+  "recordMicrophoneDescription": "Capture voice and other sounds from the selected input device",
+  "recordSystemAudio": "Record system audio",
+  "recordSystemAudioDescription": "Capture the sound currently playing through Windows",
+  "systemAudioUnavailable": "System audio capture is not available on this platform",
+  "inputDevice": "Microphone input device",
+  "systemDefaultInputDevice": "System default input device",
+  "inputDeviceManagedBySystem": "Managed by the system",
+  "noInputDevices": "No input devices found",
+  "unavailableInputDevice": "Selected input device is currently unavailable",
+  "refreshInputDevices": "Refresh input devices",
+  "defaultInputDevice": "{name} (current default)",
+  "@defaultInputDevice": {
+    "placeholders": {
+      "name": {}
+    }
+  },
+  "audioSourceRequired": "Keep at least one audio source selected",
+  "audioSourceSettingsSaved": "Audio source settings saved",
   "lockRecordingSettings": "Lock screen recording",
   "lockRecordingTrigger": "Trigger",
   "lockRecordingTriggerScreenOff": "When screen turns off",
@@ -172,6 +196,7 @@
   "englishLanguage": "English",
   "chineseLanguage": "简体中文",
   "androidSampleRate": "Android sample rate",
+  "sampleRate": "Sample rate",
   "bufferDuration": "Buffer duration",
   "bufferDurationMinutes": "Buffer duration (minutes)",
   "bufferDurationHelper": "1 to 1440 minutes",
@@ -224,6 +249,8 @@
   "issueFeedback": "Report an issue",
   "issueFeedbackSubtitle": "Open GitHub Issues",
   "windowsDemoMode": "Windows demo mode",
+  "windowsRecordingMode": "Windows microphone recording",
+  "windowsRecordingModeDescription": "Windows uses standard instant replay recording. Lock-screen triggers are available on Android only.",
   "recordingSettingsSaved": "Recording settings saved",
   "settingsSavedNextRecording": "Settings saved for next recording",
   "recordingFolderReady": "Recording folder ready",
@@ -265,6 +292,20 @@
   },
   "androidSaveStarted": "Android save started",
   "androidClipSaved": "Android clip saved",
+  "serviceError": "Recording service error: {error}",
+  "@serviceError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "saveError": "Save error: {error}",
+  "@saveError": {
+    "placeholders": {
+      "error": {}
+    }
+  },
+  "saveStarted": "Saving recording",
+  "clipSaved": "Recording saved",
   "previewPlaying": "Preview playing",
   "previewError": "Preview error: {error}",
   "@previewError": {

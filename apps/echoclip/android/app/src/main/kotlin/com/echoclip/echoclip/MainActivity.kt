@@ -5,7 +5,6 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
-import android.media.PlaybackParams
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
@@ -220,9 +219,12 @@ class MainActivity : FlutterActivity() {
                                 service?.status() ?: mapOf(
                                     "running" to false,
                                     "serviceActive" to false,
+                                    "serviceState" to ReplayForegroundService.STATE_STOPPED,
+                                    "statusCode" to ReplayForegroundService.STATE_STOPPED,
                                     "recordingMode" to modeSettings.mode,
                                     "lockRecordingTrigger" to modeSettings.trigger,
                                     "evidenceState" to "off",
+                                    "evidenceLastStopReason" to null,
                                     "availableSeconds" to
                                         (RecordingStorage.getLastAvailableMillis(this) / 1_000L)
                                             .toInt(),
@@ -244,9 +246,12 @@ class MainActivity : FlutterActivity() {
                                 service?.meterStatus() ?: mapOf(
                                     "running" to false,
                                     "serviceActive" to false,
+                                    "serviceState" to ReplayForegroundService.STATE_STOPPED,
+                                    "statusCode" to ReplayForegroundService.STATE_STOPPED,
                                     "recordingMode" to modeSettings.mode,
                                     "lockRecordingTrigger" to modeSettings.trigger,
                                     "evidenceState" to "off",
+                                    "evidenceLastStopReason" to null,
                                     "availableMillis" to
                                         RecordingStorage.getLastAvailableMillis(this),
                                     "sessionStartedUnixMillis" to
@@ -1140,8 +1145,7 @@ class MainActivity : FlutterActivity() {
 
     private fun applyPlaybackSpeed(player: MediaPlayer, speed: Float) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            player.playbackParams = (player.playbackParams ?: PlaybackParams())
-                .setSpeed(speed)
+            player.playbackParams = player.playbackParams.setSpeed(speed)
         }
     }
 

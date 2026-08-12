@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "apps/windows_demo",
     "crates/echoclip_android_jni",
     "crates/echoclip_core",
+    "crates/echoclip_windows_ffi",
 ]
 resolver = "3"
 

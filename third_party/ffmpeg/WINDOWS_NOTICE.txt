@@ -1,0 +1,23 @@
+EchoClip Windows FFmpeg build
+================================
+
+The Windows package includes an audio-only x86-64 build of:
+
+- FFmpeg 8.1.2: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+- LAME 3.100: https://download.videolan.org/pub/contrib/lame/lame-3.100.tar.gz
+
+The build recipe and exact FFmpeg configure options are stored in:
+
+- scripts/build_windows_ffmpeg.ps1
+- third_party/ffmpeg/build-ffmpeg-windows-audio.sh
+
+Networking, video devices, FFplay, and FFprobe are disabled. The build enables
+the audio codecs, containers, protocols, and filters used by EchoClip. It does
+not use --enable-nonfree.
+
+This build reports "LGPL version 2.1 or later" and does not enable GPL or
+nonfree FFmpeg components. LAME 3.100 is licensed under the GNU Library General
+Public License version 2 or later. EchoClip is distributed under GPL-3.0-only.
+The package includes the applicable FFmpeg and LAME license texts.
+Corresponding source is available from the versioned URLs above together with
+this repository's build scripts.

@@ -12,6 +12,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get appTitle => 'EchoClip';
 
   @override
+  String get showWindow => '显示窗口';
+
+  @override
+  String get hideWindow => '隐藏窗口';
+
+  @override
+  String get exitApp => '退出 EchoClip';
+
+  @override
   String get navHome => '主页';
 
   @override
@@ -52,7 +61,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get recordingStatusPaused => '录音已暂停';
 
   @override
-  String get recordingStatusPermissionLost => '麦克风权限不可用，请检查 Android 权限设置。';
+  String get recordingStatusPermissionLost => '麦克风权限不可用，请检查系统隐私设置。';
 
   @override
   String get recordingStatusStorageLow => '内部存储空间不足，请清理空间后继续录音。';
@@ -297,6 +306,57 @@ class AppLocalizationsZh extends AppLocalizations {
   String get recordingSettings => '录制设置';
 
   @override
+  String get audioSources => '音频来源';
+
+  @override
+  String get audioSourcesDescription =>
+      '可选择一个或同时选择两个来源，EchoClip 会将声音混合到同一回放缓存中。';
+
+  @override
+  String get recordMicrophone => '录制麦克风声音';
+
+  @override
+  String get recordMicrophoneDescription => '从选定的输入设备采集人声及环境声音';
+
+  @override
+  String get recordSystemAudio => '录制系统声音';
+
+  @override
+  String get recordSystemAudioDescription => '采集 Windows 当前正在播放的声音';
+
+  @override
+  String get systemAudioUnavailable => '当前平台暂不支持录制系统声音';
+
+  @override
+  String get inputDevice => '麦克风输入设备';
+
+  @override
+  String get systemDefaultInputDevice => '系统默认输入设备';
+
+  @override
+  String get inputDeviceManagedBySystem => '由系统管理';
+
+  @override
+  String get noInputDevices => '未发现输入设备';
+
+  @override
+  String get unavailableInputDevice => '已选输入设备当前不可用';
+
+  @override
+  String get refreshInputDevices => '刷新输入设备';
+
+  @override
+  String defaultInputDevice(Object name) {
+    return '$name（当前默认）';
+  }
+
+  @override
+  String get audioSourceRequired => '请至少保留一个音频来源';
+
+  @override
+  String get audioSourceSettingsSaved => '音频来源设置已保存';
+
+  @override
   String get lockRecordingSettings => '锁屏录音';
 
   @override
@@ -325,6 +385,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get androidSampleRate => 'Android 采样率';
+
+  @override
+  String get sampleRate => '采样率';
 
   @override
   String get bufferDuration => '缓存时长';
@@ -405,6 +468,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get windowsDemoMode => 'Windows 演示模式';
 
   @override
+  String get windowsRecordingMode => 'Windows 麦克风录音';
+
+  @override
+  String get windowsRecordingModeDescription =>
+      'Windows 使用标准即时回放录音；锁屏触发功能仅适用于 Android。';
+
+  @override
   String get recordingSettingsSaved => '录制设置已保存';
 
   @override
@@ -448,6 +518,22 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get androidClipSaved => 'Android 录音已保存';
+
+  @override
+  String serviceError(Object error) {
+    return '录音服务错误：$error';
+  }
+
+  @override
+  String saveError(Object error) {
+    return '保存错误：$error';
+  }
+
+  @override
+  String get saveStarted => '正在保存录音';
+
+  @override
+  String get clipSaved => '录音已保存';
 
   @override
   String get previewPlaying => '正在预览';

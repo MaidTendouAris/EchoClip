@@ -12,6 +12,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appTitle => 'EchoClip';
 
   @override
+  String get showWindow => 'Show window';
+
+  @override
+  String get hideWindow => 'Hide window';
+
+  @override
+  String get exitApp => 'Exit EchoClip';
+
+  @override
   String get navHome => 'Home';
 
   @override
@@ -53,7 +62,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get recordingStatusPermissionLost =>
-      'Microphone permission is unavailable. Check Android permissions.';
+      'Microphone permission is unavailable. Check the system privacy settings.';
 
   @override
   String get recordingStatusStorageLow =>
@@ -309,6 +318,61 @@ class AppLocalizationsEn extends AppLocalizations {
   String get recordingSettings => 'Recording settings';
 
   @override
+  String get audioSources => 'Audio sources';
+
+  @override
+  String get audioSourcesDescription =>
+      'Choose one or both sources. EchoClip mixes them into the same replay buffer.';
+
+  @override
+  String get recordMicrophone => 'Record microphone';
+
+  @override
+  String get recordMicrophoneDescription =>
+      'Capture voice and other sounds from the selected input device';
+
+  @override
+  String get recordSystemAudio => 'Record system audio';
+
+  @override
+  String get recordSystemAudioDescription =>
+      'Capture the sound currently playing through Windows';
+
+  @override
+  String get systemAudioUnavailable =>
+      'System audio capture is not available on this platform';
+
+  @override
+  String get inputDevice => 'Microphone input device';
+
+  @override
+  String get systemDefaultInputDevice => 'System default input device';
+
+  @override
+  String get inputDeviceManagedBySystem => 'Managed by the system';
+
+  @override
+  String get noInputDevices => 'No input devices found';
+
+  @override
+  String get unavailableInputDevice =>
+      'Selected input device is currently unavailable';
+
+  @override
+  String get refreshInputDevices => 'Refresh input devices';
+
+  @override
+  String defaultInputDevice(Object name) {
+    return '$name (current default)';
+  }
+
+  @override
+  String get audioSourceRequired => 'Keep at least one audio source selected';
+
+  @override
+  String get audioSourceSettingsSaved => 'Audio source settings saved';
+
+  @override
   String get lockRecordingSettings => 'Lock screen recording';
 
   @override
@@ -337,6 +401,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get androidSampleRate => 'Android sample rate';
+
+  @override
+  String get sampleRate => 'Sample rate';
 
   @override
   String get bufferDuration => 'Buffer duration';
@@ -419,6 +486,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get windowsDemoMode => 'Windows demo mode';
 
   @override
+  String get windowsRecordingMode => 'Windows microphone recording';
+
+  @override
+  String get windowsRecordingModeDescription =>
+      'Windows uses standard instant replay recording. Lock-screen triggers are available on Android only.';
+
+  @override
   String get recordingSettingsSaved => 'Recording settings saved';
 
   @override
@@ -462,6 +536,22 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get androidClipSaved => 'Android clip saved';
+
+  @override
+  String serviceError(Object error) {
+    return 'Recording service error: $error';
+  }
+
+  @override
+  String saveError(Object error) {
+    return 'Save error: $error';
+  }
+
+  @override
+  String get saveStarted => 'Saving recording';
+
+  @override
+  String get clipSaved => 'Recording saved';
 
   @override
   String get previewPlaying => 'Preview playing';

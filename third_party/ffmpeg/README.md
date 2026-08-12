@@ -1,4 +1,4 @@
-# EchoClip Android FFmpeg Build
+# EchoClip FFmpeg Builds
 
 EchoClip packages FFmpeg for Android as:
 
@@ -98,3 +98,17 @@ release artifacts or a public source package:
 - a source download link matching the shipped binary.
 
 The app About/License screen should mention that EchoClip uses FFmpeg and LAME.
+
+## Windows x86-64
+
+The Windows package uses the same pinned FFmpeg and LAME sources, compiled with
+the portable MSYS2 UCRT64 toolchain:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows_ffmpeg.ps1
+```
+
+The output is `third_party/ffmpeg/out/windows/x64/ffmpeg.exe`. The Windows
+Flutter CMake install step copies it beside `echoclip.exe`, where the shared
+frontend's Windows service resolves it. `scripts/build_windows_package.ps1`
+invokes this build automatically and packages the applicable license texts.

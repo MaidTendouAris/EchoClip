@@ -1,8 +1,9 @@
 # EchoClip Rust Core
 
-This document records the Rust backend boundary for EchoClip. Flutter UI and
-Android permission/service code should call into this core instead of owning
-audio retention and export logic.
+This document records the Rust backend boundary for EchoClip. The shared
+Flutter UI and platform permission/lifecycle adapters call into this core
+instead of owning audio retention and export logic. On Windows, the Rust FFI
+also owns native capture, source selection, and mixing.
 
 ## Goals
 
@@ -13,6 +14,8 @@ audio retention and export logic.
 - Merge retained segments into a saved audio file when the user saves a replay.
 - Keep Android microphone capture in Kotlin `AudioRecord`; Rust receives PCM
   from JNI and owns buffering/export.
+- Keep Windows x64 microphone capture, input-device selection, default-output
+  loopback, resampling, and source mixing inside the Rust/CPAL adapter.
 
 ## Platform Plan
 
@@ -28,8 +31,9 @@ match plan.route {
         // i16 little-endian mono samples into Rust.
     }
     CaptureRoute::NativeMicrophone => {
-        // Desktop route. The Rust capture adapter should feed samples into
-        // SegmentedRecorder::push_samples.
+        // Native desktop adapter. On Windows, Rust/CPAL can open the selected
+        // microphone, the default output loopback endpoint, or both, then feed
+        // one mixed PCM timeline into RecorderWorker.
     }
     CaptureRoute::Unsupported => {
         // Show a clear unsupported-platform error.
@@ -42,7 +46,7 @@ Current route mapping:
 | Platform | Route |
 | --- | --- |
 | Android | `ExternalPcm` |
-| Windows | `NativeMicrophone` |
+| Windows x64 | `NativeMicrophone`; Rust/CPAL WASAPI microphone and output loopback |
 | Linux | `NativeMicrophone` |
 | macOS | `NativeMicrophone` |
 | iOS | `Unsupported` for now |
@@ -50,6 +54,119 @@ Current route mapping:
 The Android decision is intentional: Android permission prompts, foreground
 services, and `AudioRecord` lifecycle remain native Kotlin responsibilities.
 Rust handles PCM once it has already been captured.
+
+`NativeMicrophone` is the historical name of the native desktop route. The
+Windows adapter also supports WASAPI output loopback; it does not imply that
+Windows is limited to microphone-only recording.
+
+## Windows x64 Capture And Packaging
+
+Windows and Android use the same Flutter widgets and settings page. The Dart
+service boundary reports platform capabilities instead of branching into a
+second Windows UI implementation:
+
+- `systemAudioSupported` controls whether the system-audio checkbox is enabled;
+- `inputDeviceSelectionSupported` controls whether the microphone endpoint
+  selector and refresh action are enabled;
+- disabling microphone capture also disables its endpoint controls;
+- both the Flutter state and Rust FFI reject a configuration with no enabled
+  source.
+
+Android currently reports system-audio capture and input-device selection as
+unsupported, so those controls remain visible but disabled. Its existing
+Kotlin `AudioRecord` -> JNI -> Rust path is unchanged.
+
+### Native capture topology
+
+The Windows path is owned by `echoclip_windows_ffi`:
+
+```text
+shared Flutter settings
+        |
+        v
+WindowsReplayService -> Dart FFI -> echoclip_windows_ffi
+                                      |          |
+                           CPAL/WASAPI mic   default output loopback
+                                      |          |
+                                      +----+-----+
+                                           v
+                                fixed-timeline Rust mixer
+                                           |
+                                           v
+                                    RecorderWorker
+                                           |
+                                           v
+                                  60-second PCM segments
+```
+
+CPAL enumerates active input endpoints and exposes their Windows endpoint IDs.
+The UI treats these IDs as opaque stable identifiers; display names are not
+unique and are never persistence keys. A concrete ID selects that endpoint.
+A null `microphoneDeviceId` is the separate "system default" selection: Rust
+resolves the current default input endpoint when capture starts, so a later
+recording can follow a changed Windows default without rewriting settings.
+
+System audio is captured by opening CPAL's current default output endpoint as
+an input stream. CPAL's WASAPI backend applies loopback mode for that render
+endpoint. The stream uses the endpoint's native `default_output_config()` mix
+format, then Rust downmixes and resamples it to the configured recorder rate.
+The current UI does not select a non-default output endpoint.
+
+The source modes are microphone only, system audio only, and microphone plus
+system audio. Capture callbacks never push two independent streams directly to
+`RecorderWorker`. Each callback converts its source to mono PCM at the recorder
+rate and appends it to a bounded source queue. A single mixer emits frames on a
+10 ms wall-clock timeline, after a short prebuffer:
+
+- a temporarily empty source contributes silence instead of stopping time;
+- a bounded queue prevents callback jitter or device-clock differences from
+  growing memory and latency without limit;
+- dual-source samples are averaged to retain 6 dB of headroom;
+- the resulting single PCM stream reuses the same Rust segmentation, retention,
+  and save logic as the Android-pushed PCM path.
+
+This fixed timeline is important for output loopback because a silent render
+endpoint may provide no useful audio frames. System-only capture still advances
+the replay duration and records silence until playback resumes.
+
+### Segments, save, and FFmpeg
+
+The recorder default remains 60-second signed 16-bit PCM segments. Saving a
+recent replay flushes the active segment, snapshots the required sample range,
+and joins data across segment boundaries without making the Flutter frontend
+manage platform-specific files.
+
+The Windows capture/save path itself does not depend on an installed FFmpeg.
+Recent replay saves currently use the Rust WAV exporter. The audio-processing
+page uses the bundled `ffmpeg.exe` for gain processing and MP3/WAV output.
+
+`scripts/build_windows_ffmpeg.ps1` builds an x86-64 audio-focused FFmpeg and
+LAME from the pinned source tree and writes:
+
+```text
+third_party/ffmpeg/out/windows/x64/ffmpeg.exe
+```
+
+The Flutter Windows CMake build requires this executable and copies it, its
+notice, and the FFmpeg/LAME licenses into the release bundle.
+`scripts/build_windows_package.ps1` builds the x86-64 Rust DLL and Flutter
+release, verifies the application, DLL, and FFmpeg are x64 PE files, then emits
+both a portable ZIP and an Inno Setup installer. A user installation therefore
+does not rely on `ffmpeg.exe` from `PATH`.
+
+### Current MVP limits
+
+- Changing the Windows default endpoint or unplugging an active endpoint is not
+  transparently rerouted. Stop and restart recording to resolve the new device.
+  A missing concrete microphone ID fails explicitly rather than silently
+  falling back to the default.
+- Dual-source alignment currently uses bounded FIFO queues and the 10 ms wall
+  clock. It does not place packets by the WASAPI/QPC capture timestamps, so it
+  is not a high-precision multi-device synchronization implementation.
+- Nominal-rate resampling plus bounded drop/silence correction keeps the
+  timeline finite, but long-running microphone-plus-system capture must still
+  be tested on real devices for clock drift, underruns, dropped samples, and
+  audible discontinuities across 44.1/48 kHz endpoint combinations.
 
 ## Configuration
 

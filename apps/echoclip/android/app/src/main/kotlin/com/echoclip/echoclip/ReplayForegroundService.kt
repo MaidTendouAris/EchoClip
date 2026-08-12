@@ -11,6 +11,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -40,6 +41,8 @@ class ReplayForegroundService : Service() {
     private var lockRecordingTrigger: String = TRIGGER_SCREEN_OFF
     @Volatile
     private var evidenceState: String = EVIDENCE_OFF
+    @Volatile
+    private var evidenceLastStopReason: String? = null
     private var audioRecord: AudioRecord? = null
     private lateinit var runtimeDir: File
     private var captureThread: Thread? = null
@@ -158,10 +161,10 @@ class ReplayForegroundService : Service() {
 
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "EchoClip 即时回放",
+            "EchoClip replay",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "EchoClip 正在保留最近的音频缓冲"
+            description = "EchoClip keeps a rolling audio replay buffer."
         }
 
         val manager = getSystemService(NotificationManager::class.java)
@@ -195,37 +198,43 @@ class ReplayForegroundService : Service() {
             .setContentText(notificationText())
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_save, "保存 30 秒", savePendingIntent)
-            .addAction(android.R.drawable.ic_media_pause, "停止", stopPendingIntent)
-            .build()
-
-        return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("EchoClip 正在缓冲")
-            .setContentText("即时回放模式已启动，正在保留最近的麦克风音频。")
-            .setContentIntent(openPendingIntent)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_save, "保存 30 秒", savePendingIntent)
-            .addAction(android.R.drawable.ic_media_pause, "停止", stopPendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, android.R.drawable.ic_menu_save),
+                    "Save 30s",
+                    savePendingIntent,
+                ).build(),
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, android.R.drawable.ic_media_pause),
+                    "Stop",
+                    stopPendingIntent,
+                ).build(),
+            )
             .build()
     }
 
     private fun notificationTitle(): String {
         return if (recordingMode == MODE_LOCKSCREEN) {
-            "EchoClip 锁屏录音模式"
+            "EchoClip lock recording"
         } else {
-            "EchoClip 正在缓冲"
+            "EchoClip replay buffer"
         }
     }
 
     private fun notificationText(): String {
         return when {
             recordingMode != MODE_LOCKSCREEN ->
-                "标准录音模式运行中，正在保留最近的麦克风音频。"
+                "Standard recording mode is writing to the replay cache."
             evidenceState == EVIDENCE_RECORDING ->
-                "屏幕状态已触发录音，音频正在写入回放缓存。"
+                "Screen state triggered recording. Audio is being cached."
+            evidenceLastStopReason == STOP_REASON_SCREEN_ON ->
+                "Recording stopped when the screen turned on. Waiting for the next trigger."
+            evidenceLastStopReason == STOP_REASON_USER_PRESENT ->
+                "Recording stopped after unlock. Waiting for the next trigger."
             else ->
-                "锁屏录音模式待命中，触发后才会占用麦克风。"
+                "Lock recording mode is armed and will use the microphone after trigger."
         }
     }
 
@@ -239,6 +248,7 @@ class ReplayForegroundService : Service() {
             stopCapture()
         }
         evidenceState = EVIDENCE_ARMED
+        evidenceLastStopReason = null
         registerScreenReceiver()
         updateNotification()
     }
@@ -246,6 +256,7 @@ class ReplayForegroundService : Service() {
     private fun leaveEvidenceMode() {
         unregisterScreenReceiver()
         evidenceState = EVIDENCE_OFF
+        evidenceLastStopReason = null
     }
 
     private fun registerScreenReceiver() {
@@ -256,8 +267,8 @@ class ReplayForegroundService : Service() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_OFF -> handleScreenOff()
-                    Intent.ACTION_SCREEN_ON -> stopEvidenceCapture()
-                    Intent.ACTION_USER_PRESENT -> stopEvidenceCapture()
+                    Intent.ACTION_SCREEN_ON -> stopEvidenceCapture(STOP_REASON_SCREEN_ON)
+                    Intent.ACTION_USER_PRESENT -> stopEvidenceCapture(STOP_REASON_USER_PRESENT)
                 }
             }
         }
@@ -283,6 +294,7 @@ class ReplayForegroundService : Service() {
         if (lockRecordingTrigger == TRIGGER_KEYGUARD_LOCKED && !isKeyguardLocked()) {
             return
         }
+        evidenceLastStopReason = null
         startEvidenceCapture()
     }
 
@@ -300,12 +312,13 @@ class ReplayForegroundService : Service() {
         updateNotification()
     }
 
-    private fun stopEvidenceCapture() {
+    private fun stopEvidenceCapture(reason: String) {
         if (recordingMode != MODE_LOCKSCREEN || !isRunning) {
             return
         }
         stopCapture()
         evidenceState = EVIDENCE_ARMED
+        evidenceLastStopReason = reason
         updateNotification()
     }
 
@@ -482,9 +495,12 @@ class ReplayForegroundService : Service() {
         return mapOf(
             "running" to isRunning,
             "serviceActive" to true,
+            "serviceState" to serviceState(),
+            "statusCode" to serviceState(),
             "recordingMode" to recordingMode,
             "lockRecordingTrigger" to lockRecordingTrigger,
             "evidenceState" to evidenceState,
+            "evidenceLastStopReason" to evidenceLastStopReason,
             "availableSeconds" to (rustStatus.availableMillis / 1_000L).toInt(),
             "availableMillis" to rustStatus.availableMillis,
             "sessionStartedUnixMillis" to if (isRunning) sessionStartedUnixMillis else 0L,
@@ -557,9 +573,12 @@ class ReplayForegroundService : Service() {
         return mapOf(
             "running" to isRunning,
             "serviceActive" to true,
+            "serviceState" to serviceState(),
+            "statusCode" to serviceState(),
             "recordingMode" to recordingMode,
             "lockRecordingTrigger" to lockRecordingTrigger,
             "evidenceState" to evidenceState,
+            "evidenceLastStopReason" to evidenceLastStopReason,
             "availableMillis" to availableMillis(),
             "sessionStartedUnixMillis" to if (isRunning) sessionStartedUnixMillis else 0L,
             "level" to levels.first.toDouble(),
@@ -573,6 +592,19 @@ class ReplayForegroundService : Service() {
             return RustAudioCore.availableMillis(rustBufferHandle)
         }
         return 0L
+    }
+
+    private fun serviceState(): String {
+        if (recordingMode != MODE_LOCKSCREEN) {
+            return if (isRunning) STATE_STANDARD_RECORDING else STATE_STANDARD_PAUSED
+        }
+        return when {
+            evidenceState == EVIDENCE_RECORDING -> STATE_LOCKSCREEN_RECORDING
+            evidenceLastStopReason == STOP_REASON_SCREEN_ON -> STATE_LOCKSCREEN_STOPPED_SCREEN_ON
+            evidenceLastStopReason == STOP_REASON_USER_PRESENT -> STATE_LOCKSCREEN_STOPPED_USER_PRESENT
+            evidenceState == EVIDENCE_ARMED -> STATE_LOCKSCREEN_ARMED
+            else -> STATE_STOPPED
+        }
     }
 
     private fun updateLevels(samples: ShortArray, count: Int) {
@@ -797,6 +829,15 @@ class ReplayForegroundService : Service() {
         const val EVIDENCE_OFF = "off"
         const val EVIDENCE_ARMED = "armed"
         const val EVIDENCE_RECORDING = "recording"
+        const val STOP_REASON_SCREEN_ON = "screen_on"
+        const val STOP_REASON_USER_PRESENT = "user_present"
+        const val STATE_STOPPED = "stopped"
+        const val STATE_STANDARD_RECORDING = "standard_recording"
+        const val STATE_STANDARD_PAUSED = "standard_paused"
+        const val STATE_LOCKSCREEN_ARMED = "lockscreen_armed"
+        const val STATE_LOCKSCREEN_RECORDING = "lockscreen_recording"
+        const val STATE_LOCKSCREEN_STOPPED_SCREEN_ON = "lockscreen_stopped_screen_on"
+        const val STATE_LOCKSCREEN_STOPPED_USER_PRESENT = "lockscreen_stopped_user_present"
         private const val CHANNEL_ID = "echoclip_replay"
         private const val NOTIFICATION_ID = 4102
         private const val CHANNELS = 1

@@ -987,7 +987,8 @@ impl RecorderSnapshot {
 
         let output_path = output_path.as_ref();
         let bitrate = format!("{}k", sanitize_mp3_bitrate(options.mp3_bitrate_kbps));
-        let mut child = Command::new(ffmpeg_path)
+        let mut command = Command::new(ffmpeg_path);
+        command
             .arg("-hide_banner")
             .arg("-loglevel")
             .arg("error")
@@ -1007,7 +1008,15 @@ impl RecorderSnapshot {
             .arg("-y")
             .arg(output_path)
             .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Keep the console window hidden while ffmpeg runs; otherwise the
+            // GUI app flashes a cmd window on every export.
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| EchoCoreError::FfmpegUnavailable(error.to_string()))?;
 

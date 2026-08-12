@@ -104,6 +104,24 @@ abstract class AppLocalizations {
   /// **'EchoClip'**
   String get appTitle;
 
+  /// No description provided for @showWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show window'**
+  String get showWindow;
+
+  /// No description provided for @hideWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide window'**
+  String get hideWindow;
+
+  /// No description provided for @exitApp.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit EchoClip'**
+  String get exitApp;
+
   /// No description provided for @navHome.
   ///
   /// In en, this message translates to:
@@ -179,7 +197,7 @@ abstract class AppLocalizations {
   /// No description provided for @recordingStatusPermissionLost.
   ///
   /// In en, this message translates to:
-  /// **'Microphone permission is unavailable. Check Android permissions.'**
+  /// **'Microphone permission is unavailable. Check the system privacy settings.'**
   String get recordingStatusPermissionLost;
 
   /// No description provided for @recordingStatusStorageLow.
@@ -626,6 +644,102 @@ abstract class AppLocalizations {
   /// **'Recording settings'**
   String get recordingSettings;
 
+  /// No description provided for @audioSources.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio sources'**
+  String get audioSources;
+
+  /// No description provided for @audioSourcesDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose one or both sources. EchoClip mixes them into the same replay buffer.'**
+  String get audioSourcesDescription;
+
+  /// No description provided for @recordMicrophone.
+  ///
+  /// In en, this message translates to:
+  /// **'Record microphone'**
+  String get recordMicrophone;
+
+  /// No description provided for @recordMicrophoneDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Capture voice and other sounds from the selected input device'**
+  String get recordMicrophoneDescription;
+
+  /// No description provided for @recordSystemAudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Record system audio'**
+  String get recordSystemAudio;
+
+  /// No description provided for @recordSystemAudioDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Capture the sound currently playing through Windows'**
+  String get recordSystemAudioDescription;
+
+  /// No description provided for @systemAudioUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'System audio capture is not available on this platform'**
+  String get systemAudioUnavailable;
+
+  /// No description provided for @inputDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone input device'**
+  String get inputDevice;
+
+  /// No description provided for @systemDefaultInputDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'System default input device'**
+  String get systemDefaultInputDevice;
+
+  /// No description provided for @inputDeviceManagedBySystem.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed by the system'**
+  String get inputDeviceManagedBySystem;
+
+  /// No description provided for @noInputDevices.
+  ///
+  /// In en, this message translates to:
+  /// **'No input devices found'**
+  String get noInputDevices;
+
+  /// No description provided for @unavailableInputDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'Selected input device is currently unavailable'**
+  String get unavailableInputDevice;
+
+  /// No description provided for @refreshInputDevices.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh input devices'**
+  String get refreshInputDevices;
+
+  /// No description provided for @defaultInputDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} (current default)'**
+  String defaultInputDevice(Object name);
+
+  /// No description provided for @audioSourceRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep at least one audio source selected'**
+  String get audioSourceRequired;
+
+  /// No description provided for @audioSourceSettingsSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio source settings saved'**
+  String get audioSourceSettingsSaved;
+
   /// No description provided for @lockRecordingSettings.
   ///
   /// In en, this message translates to:
@@ -685,6 +799,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Android sample rate'**
   String get androidSampleRate;
+
+  /// No description provided for @sampleRate.
+  ///
+  /// In en, this message translates to:
+  /// **'Sample rate'**
+  String get sampleRate;
 
   /// No description provided for @bufferDuration.
   ///
@@ -818,6 +938,18 @@ abstract class AppLocalizations {
   /// **'Windows demo mode'**
   String get windowsDemoMode;
 
+  /// No description provided for @windowsRecordingMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Windows microphone recording'**
+  String get windowsRecordingMode;
+
+  /// No description provided for @windowsRecordingModeDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Windows uses standard instant replay recording. Lock-screen triggers are available on Android only.'**
+  String get windowsRecordingModeDescription;
+
   /// No description provided for @recordingSettingsSaved.
   ///
   /// In en, this message translates to:
@@ -883,6 +1015,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Android clip saved'**
   String get androidClipSaved;
+
+  /// No description provided for @serviceError.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording service error: {error}'**
+  String serviceError(Object error);
+
+  /// No description provided for @saveError.
+  ///
+  /// In en, this message translates to:
+  /// **'Save error: {error}'**
+  String saveError(Object error);
+
+  /// No description provided for @saveStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving recording'**
+  String get saveStarted;
+
+  /// No description provided for @clipSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording saved'**
+  String get clipSaved;
 
   /// No description provided for @previewPlaying.
   ///

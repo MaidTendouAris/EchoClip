@@ -24,6 +24,7 @@ demo_output/
 *.aab
 *.symbols
 *.map.json
+dist/
 
 # Local tool downloads
 tools/gradle/
