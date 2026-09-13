@@ -9,14 +9,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.provider.DocumentsContract
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
     private val channelName = "com.echoclip/replay_service"
@@ -62,6 +63,102 @@ class MainActivity : FlutterActivity() {
                             ),
                         )
                     }
+                    "getServerSyncSettings" -> {
+                        val settings = RecordingStorage.getSyncSettings(this)
+                        val serviceStatus = ReplayForegroundService.activeService?.status()
+                        result.success(
+                            settings.toMap() + mapOf(
+                                "status" to serviceStatus?.get("syncStatus"),
+                                "configurationError" to
+                                    serviceStatus?.get("syncConfigurationError"),
+                            ),
+                        )
+                    }
+                    "setServerSyncEnabled" -> {
+                        val current = RecordingStorage.getSyncSettings(this)
+                        val settings = RecordingStorage.setSyncSettings(
+                            context = this,
+                            enabled = call.argument<Boolean>("enabled") ?: current.enabled,
+                            serverHost = current.serverHost,
+                            uploadPort = current.uploadPort,
+                            uploadKeyBase64 = null,
+                            clearKey = false,
+                        )
+                        val applied = ReplayForegroundService.activeService
+                            ?.applySyncSettings()
+                            ?: (if (settings.enabled) false else true)
+                        result.success(
+                            settings.toMap() + mapOf(
+                                "applied" to applied,
+                            ),
+                        )
+                    }
+                    "setServerSyncSettings" -> {
+                        val current = RecordingStorage.getSyncSettings(this)
+                        val settings = RecordingStorage.setSyncSettings(
+                            context = this,
+                            enabled = current.enabled,
+                            serverHost =
+                                call.argument<String>("serverHost") ?: current.serverHost,
+                            uploadPort = call.argument<Int>("uploadPort") ?: current.uploadPort,
+                            uploadKeyBase64 = call.argument<String>("uploadKey"),
+                            clearKey = call.argument<Boolean>("clearKey") ?: false,
+                        )
+                        val applied = ReplayForegroundService.activeService
+                            ?.applySyncSettings()
+                            ?: (if (settings.enabled) false else true)
+                        result.success(
+                            settings.toMap() + mapOf(
+                                "applied" to applied,
+                            ),
+                        )
+                    }
+                    "testServerConnection" -> {
+                        val current = RecordingStorage.getSyncSettings(this)
+                        var serverHost =
+                            (call.argument<String>("serverHost") ?: current.serverHost).trim()
+                        if (serverHost.startsWith('[') && serverHost.endsWith(']')) {
+                            serverHost = serverHost.substring(1, serverHost.length - 1)
+                        }
+                        val uploadPort = call.argument<Int>("uploadPort") ?: current.uploadPort
+                        val suppliedKey = call.argument<String>("uploadKey")?.trim().orEmpty()
+                        val uploadKey = suppliedKey.ifBlank {
+                            RecordingStorage.getSyncUploadKey(this).orEmpty()
+                        }
+                        val testSettings = SyncSettings(
+                            enabled = false,
+                            serverHost = serverHost,
+                            uploadPort = uploadPort,
+                            deviceId = current.deviceId,
+                            keyConfigured = uploadKey.isNotBlank(),
+                        )
+                        if (testSettings.serverUrl.isBlank() || uploadKey.isBlank()) {
+                            result.success(
+                                mapOf(
+                                    "success" to false,
+                                    "error" to if (uploadKey.isBlank()) {
+                                        "sync_upload_key_required"
+                                    } else {
+                                        "sync_server_address_invalid"
+                                    },
+                                    "testedAtUnixSeconds" to System.currentTimeMillis() / 1_000,
+                                    "serverUrl" to testSettings.serverUrl,
+                                ),
+                            )
+                        } else {
+                            Thread {
+                                val outcome = RustAudioCore.testSyncConnection(
+                                    serverUrl = testSettings.serverUrl,
+                                    uploadKeyBase64 = uploadKey,
+                                    deviceId = current.deviceId,
+                                ) + mapOf(
+                                    "testedAtUnixSeconds" to System.currentTimeMillis() / 1_000,
+                                    "serverUrl" to testSettings.serverUrl,
+                                )
+                                runOnUiThread { result.success(outcome) }
+                            }.start()
+                        }
+                    }
                     "getExportSettings" -> {
                         result.success(RecordingStorage.getExportSettings(this).toMap())
                     }
@@ -101,11 +198,15 @@ class MainActivity : FlutterActivity() {
                             trigger,
                         )
                         result.success(
-                            settings.toMap() + mapOf(
-                                "running" to (ReplayForegroundService.activeService?.status()
-                                    ?.get("running") ?: false),
-                                "serviceActive" to (ReplayForegroundService.activeService != null),
-                            ),
+                            ReplayForegroundService.activeService?.applyRecordingMode(settings)
+                                ?: mapOf(
+                                    "running" to false,
+                                    "serviceActive" to false,
+                                    "recordingMode" to settings.mode,
+                                    "lockRecordingTrigger" to settings.trigger,
+                                    "evidenceState" to ReplayForegroundService.EVIDENCE_OFF,
+                                    "serviceState" to ReplayForegroundService.STATE_STOPPED,
+                                ),
                         )
                     }
                     "chooseRecordingFolder" -> chooseRecordingFolder(result)
@@ -139,16 +240,51 @@ class MainActivity : FlutterActivity() {
                         val groupUri = call.argument<String>("groupUri")
                         result.success(moveRecording(uri, parentUri, groupUri))
                     }
-                    "processRecording" -> {
+                    "convertWavToMp3" -> {
                         result.success(
-                            processRecording(
+                            convertWavToMp3(
                                 uriString = call.argument<String>("uri"),
                                 parentUriString = call.argument<String>("parentUri"),
-                                gainDb = call.argument<Double>("gainDb") ?: 0.0,
-                                format = call.argument<String>("format"),
                                 mp3BitrateKbps = call.argument<Int>("mp3BitrateKbps"),
                             ),
                         )
+                    }
+                    "getScheduleSnapshot" -> {
+                        result.success(ScheduleCoordinator.snapshot(this))
+                    }
+                    "upsertScheduledTask" -> {
+                        val task = call.argument<Map<String, Any?>>("task")
+                            ?: throw IllegalArgumentException("invalid_scheduled_task")
+                        result.success(
+                            ScheduleCoordinator.upsert(this, JSONObject(task).toString()),
+                        )
+                    }
+                    "deleteScheduledTask" -> {
+                        val taskId = call.argument<String>("taskId")
+                            ?: throw IllegalArgumentException("scheduled_task_id_required")
+                        result.success(ScheduleCoordinator.delete(this, taskId))
+                    }
+                    "setScheduledTaskEnabled" -> {
+                        val taskId = call.argument<String>("taskId")
+                            ?: throw IllegalArgumentException("scheduled_task_id_required")
+                        result.success(
+                            ScheduleCoordinator.setEnabled(
+                                this,
+                                taskId,
+                                call.argument<Number>("expectedRevision")?.toLong() ?: 0L,
+                                call.argument<Boolean>("enabled") == true,
+                            ),
+                        )
+                    }
+                    "requestExactAlarmPermission" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            startActivity(
+                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                    data = Uri.parse("package:$packageName")
+                                },
+                            )
+                        }
+                        result.success(ScheduleCoordinator.snapshot(this))
                     }
                     "clearCache" -> result.success(clearCache())
                     "getCacheStatus" -> result.success(cacheStatus())
@@ -194,23 +330,19 @@ class MainActivity : FlutterActivity() {
                                 result.success(service.saveLatestClip(seconds))
                             }
                         }
-                        "cancelSaveJob" -> {
-                            val jobId = call.argument<Number>("jobId")?.toLong() ?: 0L
-                            val service = ReplayForegroundService.activeService
-                            if (service == null) {
-                                result.success(
-                                    mapOf(
-                                        "canceled" to false,
-                                        "error" to "service_not_running",
-                                    ),
-                                )
-                            } else {
-                                result.success(service.cancelSaveJob(jobId))
-                            }
-                        }
+                        "getSaveJob" -> result.success(ClipSaveJobs.status(
+                            call.argument<Number>("jobId")?.toLong() ?: 0L))
+                        "cancelSaveJob" -> result.success(ClipSaveJobs.cancel(
+                            call.argument<Number>("jobId")?.toLong() ?: 0L))
+                        "shareRecording" -> result.success(RecordingShare.share(
+                            this, call.argument<String>("uri"), call.argument<String>("name"),
+                            call.argument<String>("title")))
                         "stopReplay" -> {
-                            stopService(Intent(this, ReplayForegroundService::class.java))
-                            result.success(mapOf("running" to false))
+                            val service = ReplayForegroundService.activeService
+                            result.success(
+                                service?.stopManualCapture()
+                                    ?: mapOf("running" to false, "stopped" to false),
+                            )
                         }
                         "getReplayStatus" -> {
                             val service = ReplayForegroundService.activeService
@@ -313,8 +445,10 @@ class MainActivity : FlutterActivity() {
                             "listGroups" -> emptyList<Map<String, Any?>>()
                             "createGroup", "renameGroup", "deleteGroup",
                             "renameRecording", "deleteRecording", "moveRecording",
-                            "processRecording", "clearCache", "getCacheStatus",
-                            "openUrl" -> mapOf(
+                            "convertWavToMp3", "getScheduleSnapshot",
+                            "upsertScheduledTask", "deleteScheduledTask",
+                            "setScheduledTaskEnabled", "requestExactAlarmPermission",
+                            "clearCache", "getCacheStatus", "openUrl" -> mapOf(
                                 "ok" to false,
                                 "error" to "exception:${error.javaClass.simpleName}:${error.message}",
                             )
@@ -677,11 +811,9 @@ class MainActivity : FlutterActivity() {
         return mapOf("ok" to true, "uri" to moved.toString())
     }
 
-    private fun processRecording(
+    private fun convertWavToMp3(
         uriString: String?,
         parentUriString: String?,
-        gainDb: Double,
-        format: String?,
         mp3BitrateKbps: Int?,
     ): Map<String, Any?> {
         val sourceUri = uriString?.let(Uri::parse)
@@ -690,64 +822,33 @@ class MainActivity : FlutterActivity() {
             ?: return mapOf("ok" to false, "error" to "recording_folder_not_selected")
         val ffmpegPath = resolveFfmpegPath()
             ?: return mapOf("ok" to false, "error" to "ffmpeg_unavailable")
-
-        val cleanFormat = when (format?.lowercase(Locale.US)) {
-            "wav" -> "wav"
-            else -> "mp3"
+        val sourceName = queryDisplayName(sourceUri) ?: "recording.wav"
+        if (!sourceName.lowercase(Locale.US).endsWith(".wav")) {
+            return mapOf("ok" to false, "error" to "wav_source_required")
         }
         val bitrate = sanitizeMp3Bitrate(mp3BitrateKbps ?: 128)
-        val sourceName = queryDisplayName(sourceUri) ?: "recording"
-        val sourceExtension = recordingExtension(sourceName)?.removePrefix(".") ?: "audio"
         val timestamp = System.currentTimeMillis()
-        val inputFile = File(cacheDir, "echoclip-process-input-$timestamp.$sourceExtension")
-        val outputFile = File(cacheDir, "echoclip-process-output-$timestamp.$cleanFormat")
-
+        val inputFile = File(cacheDir, "echoclip-convert-input-$timestamp.wav")
+        val outputFile = File(cacheDir, "echoclip-convert-output-$timestamp.mp3")
         return try {
             copyDocumentToFile(contentResolver, sourceUri, inputFile)
-            val gainLabel = gainDbLabel(gainDb)
-            val command = mutableListOf(
-                ffmpegPath,
-                "-y",
-                "-hide_banner",
-                "-nostdin",
-                "-i",
+            val converted = RustAudioCore.transcodeWavToMp3(
                 inputFile.absolutePath,
-                "-af",
-                "volume=${gainDb}dB",
-                "-vn",
+                outputFile.absolutePath,
+                ffmpegPath,
+                bitrate,
             )
-            if (cleanFormat == "wav") {
-                command += listOf("-c:a", "pcm_s16le")
-            } else {
-                command += listOf("-c:a", "libmp3lame", "-b:a", "${bitrate}k")
+            if (!converted || !outputFile.exists() || outputFile.length() == 0L) {
+                return mapOf("ok" to false, "error" to "wav_to_mp3_failed")
             }
-            command += outputFile.absolutePath
-
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
-            val ffmpegOutput = process.inputStream.bufferedReader().use { it.readText() }
-            val finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                return mapOf("ok" to false, "error" to "ffmpeg_timeout")
-            }
-            if (process.exitValue() != 0 || !outputFile.exists() || outputFile.length() == 0L) {
-                return mapOf(
-                    "ok" to false,
-                    "error" to "ffmpeg_failed:${ffmpegOutput.takeLast(240)}",
-                )
-            }
-
             val parentUri = parentUriString?.let(Uri::parse) ?: rootDocumentUri(folderUri)
-            val outputName = processedRecordingName(sourceName, gainLabel, cleanFormat)
+            val outputName = sourceName.substringBeforeLast(".") + ".mp3"
             val outputUri = DocumentsContract.createDocument(
                 contentResolver,
                 parentUri,
-                mimeTypeForAudioFormat(cleanFormat),
+                "audio/mpeg",
                 outputName,
             ) ?: return mapOf("ok" to false, "error" to "create_document_failed")
-
             try {
                 copyFileToDocument(contentResolver, outputFile, outputUri)
             } catch (error: Exception) {
@@ -757,14 +858,11 @@ class MainActivity : FlutterActivity() {
                     "error" to "write_failed:${error.javaClass.simpleName}:${error.message}",
                 )
             }
-
             mapOf(
                 "ok" to true,
                 "name" to outputName,
                 "uri" to outputUri.toString(),
                 "size" to outputFile.length(),
-                "format" to cleanFormat,
-                "gainDb" to gainDb,
             )
         } catch (error: Exception) {
             mapOf(
@@ -776,115 +874,11 @@ class MainActivity : FlutterActivity() {
             outputFile.delete()
         }
     }
-
-    private fun saveLatestClipFromCache(seconds: Int): Map<String, Any?> {
-        val settings = RecordingStorage.getAudioSettings(this)
-        val runtimeDir = File(filesDir, "echoclip-runtime").apply { mkdirs() }
-        val handle = RustAudioCore.startRecorder(
-            tempDir = runtimeDir.absolutePath,
-            sampleRate = settings.sampleRate,
-            channels = 1,
-            segmentSeconds = 60,
-            maxReplaySeconds = settings.bufferSeconds,
-            queueCapacityChunks = 1,
-        )
-        if (handle == 0L) {
-            return mapOf("saved" to false, "error" to "rust_buffer_unavailable")
-        }
-
-        return try {
-            val availableMillis = RustAudioCore.availableMillis(handle)
-            if (availableMillis <= 0L) {
-                return mapOf("saved" to false, "error" to "buffer_empty")
-            }
-            val folderUri = RecordingStorage.getRecordingFolderUri(this)
-                ?: return mapOf("saved" to false, "error" to "recording_folder_not_selected")
-            val exportSettings = RecordingStorage.getExportSettings(this)
-            val timestamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
-                .format(java.util.Date())
-            val safeSeconds = seconds.coerceAtLeast(1)
-            val extension = exportSettings.format
-            val cacheFile = File(cacheDir, "echoclip-export-$timestamp-${safeSeconds}s.$extension")
-            val jobId = RustAudioCore.saveLatestToCache(
-                handle,
-                safeSeconds,
-                cacheFile.absolutePath,
-                exportSettings.format,
-                exportSettings.mp3BitrateKbps,
-                resolveFfmpegPath(),
-            )
-            if (jobId == 0L) {
-                return mapOf("saved" to false, "error" to "export_job_start_failed")
-            }
-
-            val exportStatus = waitForRustExport(handle, jobId)
-            if (exportStatus.state != "Finished") {
-                cacheFile.delete()
-                return mapOf(
-                    "saved" to false,
-                    "error" to "export_failed:${exportStatus.error ?: exportStatus.state}",
-                )
-            }
-
-            val durationSeconds = if (settings.sampleRate <= 0) {
-                0L
-            } else {
-                exportStatus.samplesWritten / settings.sampleRate
-            }
-            val displayName = "echoclip-$timestamp-${durationSeconds}s.$extension"
-            val parentDocumentUri = rootDocumentUri(folderUri)
-            val outputUri = DocumentsContract.createDocument(
-                contentResolver,
-                parentDocumentUri,
-                mimeTypeForAudioFormat(exportSettings.format),
-                displayName,
-            ) ?: run {
-                cacheFile.delete()
-                return mapOf("saved" to false, "error" to "create_document_failed")
-            }
-
-            try {
-                copyFileToDocument(contentResolver, cacheFile, outputUri)
-            } catch (error: Exception) {
-                runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
-                cacheFile.delete()
-                return mapOf(
-                    "saved" to false,
-                    "error" to "write_failed:${error.javaClass.simpleName}:${error.message}",
-                )
-            }
-            cacheFile.delete()
-            mapOf(
-                "saved" to true,
-                "pending" to false,
-                "name" to displayName,
-                "uri" to outputUri.toString(),
-            )
-        } catch (error: Exception) {
-            mapOf(
-                "saved" to false,
-                "error" to "exception:${error.javaClass.simpleName}:${error.message}",
-            )
-        } finally {
-            RustAudioCore.stopRecorder(handle)
-            RustAudioCore.destroy(handle)
-        }
-    }
-
-    private fun waitForRustExport(handle: Long, jobId: Long): RustExportStatus {
-        val started = SystemClock.elapsedRealtime()
-        var status = RustAudioCore.exportStatus(handle, jobId)
-        while (status.state == "Pending" || status.state == "Running") {
-            if (SystemClock.elapsedRealtime() - started > PROCESS_TIMEOUT_SECONDS * 1_000L) {
-                return status.copy(state = "Failed", error = "export_timeout")
-            }
-            Thread.sleep(100L)
-            status = RustAudioCore.exportStatus(handle, jobId)
-        }
-        return status
-    }
+    private fun saveLatestClipFromCache(seconds: Int): Map<String, Any?> =
+        ClipSaveJobs.start(this, seconds)
 
     private fun clearCache(): Map<String, Any?> {
+        if (ClipSaveJobs.hasActiveJobs) return mapOf("ok" to false, "error" to "save_in_progress")
         var deletedBytes = 0L
         deletedBytes += deleteChildren(cacheDir)
         val serviceRunning = ReplayForegroundService.activeService != null
@@ -1005,21 +999,6 @@ class MainActivity : FlutterActivity() {
             File(applicationInfo.nativeLibraryDir, "ffmpeg"),
         )
         return candidates.firstOrNull { it.exists() && it.canExecute() }?.absolutePath
-    }
-
-    private fun processedRecordingName(sourceName: String, gainLabel: String, format: String): String {
-        val baseName = sourceName.substringBeforeLast('.', sourceName)
-        val cleanBase = sanitizeDocumentName(baseName, allowWavExtension = false) ?: "recording"
-        return "$cleanBase-processed-$gainLabel.$format"
-    }
-
-    private fun gainDbLabel(gainDb: Double): String {
-        val rounded = (gainDb * 10).toInt() / 10.0
-        val prefix = if (rounded >= 0) "plus" else "minus"
-        val value = kotlin.math.abs(rounded)
-            .toString()
-            .replace(".", "p")
-        return "${prefix}${value}db"
     }
 
     private fun mimeTypeForAudioFormat(format: String): String {

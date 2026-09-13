@@ -59,6 +59,28 @@ Rust handles PCM once it has already been captured.
 Windows adapter also supports WASAPI output loopback; it does not imply that
 Windows is limited to microphone-only recording.
 
+## Scheduled Tasks
+
+Version 0.6.0 keeps all one-shot scheduling rules in
+`echoclip_core::scheduler`. The Core owns task validation, revisions, trigger
+resolution, action ordering, late execution policy, deduplication, persistent
+state, interruption reconciliation, and execution history. State is stored
+under `<core_work_dir>/.echoclip/scheduler/state-v1.json`; it does not contain
+recording-folder paths, server addresses, or upload keys.
+
+The public JSON boundary supports snapshot, upsert, delete, enable/disable,
+tick, and completion operations. Windows keeps a native wait thread alive with
+the tray process. Android forwards the Core-provided next wake time to one
+`AlarmManager` alarm and reports platform action results through JNI. Flutter
+may animate the returned deadline for display, but it never decides that a task
+is due.
+
+Scheduled upload actions only toggle the existing live-upload state. Enabling
+upload creates the same new PCM boundary as the manual switch and never scans
+or uploads older rolling-cache segments. Scheduled saves reuse the existing
+`RecorderWorker` export path and record partial-buffer outcomes in history.
+See [Scheduled Tasks Design and Implementation](SCHEDULED_TASKS_DESIGN.md) for
+the complete V1 behavior and platform constraints.
 ## Windows x64 Capture And Packaging
 
 Windows and Android use the same Flutter widgets and settings page. The Dart

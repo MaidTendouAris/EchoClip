@@ -2,6 +2,9 @@
 members = [
     "crates/echoclip_android_jni",
     "crates/echoclip_core",
+    "crates/echoclip_server",
+    "crates/echoclip_sync_client",
+    "crates/echoclip_sync_protocol",
     "crates/echoclip_windows_ffi",
 ]
 resolver = "3"

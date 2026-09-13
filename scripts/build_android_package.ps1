@@ -1,4 +1,4 @@
-﻿<#
+<#
     EchoClip Android 构建脚本
 
     这个脚本把 Android 版本发布时容易忘记的步骤集中到一个入口：
@@ -12,8 +12,8 @@
     8. 生成一份 changelog 草稿，方便发 GitHub Release 时整理。
 
     示例：
-      powershell -ExecutionPolicy Bypass -File scripts\build_android_package.ps1 -BuildMode both
-      powershell -ExecutionPolicy Bypass -File scripts\build_android_package.ps1 -BuildMode release -VersionName 0.5.0 -VersionCode 6
+      pwsh -NoProfile -File scripts\build_android_package.ps1 -BuildMode both
+      pwsh -NoProfile -File scripts\build_android_package.ps1 -BuildMode release -VersionName 0.5.0 -VersionCode 6
 #>
 
 [CmdletBinding()]
@@ -38,10 +38,20 @@ param(
     [switch]$SkipPubGet,
 
     # 跳过 APK 版本及原生库 ABI/ELF 校验。正常发布不建议使用。
-    [switch]$SkipApkValidation
+    [switch]$SkipApkValidation,
+
+    # 跳过 Android arm64 Rust 桥接库构建（默认会先构建并复制到 jniLibs）。
+    [switch]$SkipRustBuild,
+
+    # 跳过 Android arm64 FFmpeg 构建（默认会先构建并复制到 jniLibs）。
+    [switch]$SkipFfmpegBuild
 )
 
 $ErrorActionPreference = "Stop"
+$pwshExe = Join-Path $PSHOME "pwsh.exe"
+if (-not (Test-Path -LiteralPath $pwshExe)) {
+    throw "PowerShell 7 (pwsh.exe) is required."
+}
 $androidTargetPlatform = "android-arm64"
 $androidAbi = "arm64-v8a"
 
@@ -314,7 +324,10 @@ function Test-ApkVersion {
 function Test-ApkNativeLibraries {
     param(
         [string]$ApkPath,
-        [string]$ExpectedAbi
+        [string]$ExpectedAbi,
+        # Debug APKs run the Dart VM in JIT mode and therefore contain no
+        # libapp.so; only release APKs carry the precompiled Dart AOT app.
+        [bool]$RequireAppLibrary = $true
     )
 
     # APK 是 ZIP 容器。直接读取每个 lib/<abi>/*.so 的 ELF 头，既能避免
@@ -345,11 +358,13 @@ function Test-ApkNativeLibraries {
 
         $entryNames = @($nativeEntries | ForEach-Object { $_.FullName })
         $requiredLibraries = @(
-            "libapp.so",
             "libflutter.so",
             "libechoclip_android_jni.so",
             "libffmpeg.so"
         )
+        if ($RequireAppLibrary) {
+            $requiredLibraries += "libapp.so"
+        }
         foreach ($library in $requiredLibraries) {
             $requiredPath = "lib/$ExpectedAbi/$library"
             if ($entryNames -notcontains $requiredPath) {
@@ -501,6 +516,10 @@ $toolHome = Join-Path $repoRoot ".dart-tool-home"
 New-Item -ItemType Directory -Force -Path $toolHome | Out-Null
 $env:APPDATA = $toolHome
 $env:LOCALAPPDATA = $toolHome
+# 默认的默认缓存位于 <LOCALAPPDATA>\Pub\Cache，其路径命中沙箱写保护规则
+# （jni 插件的 externalNativeBuild/.cxx 写入会报"拒绝访问"）。改名为 pub_cache
+# 即可在仓库内继续使用同一份缓存，同时避开该限制。
+$env:PUB_CACHE = Join-Path $toolHome "pub_cache"
 $env:DART_SUPPRESS_ANALYTICS = "true"
 $env:FLUTTER_SUPPRESS_ANALYTICS = "true"
 $env:JAVA_HOME = $javaHome
@@ -514,6 +533,28 @@ if (-not $SkipPubGet) {
         -FilePath (Join-Path $flutterSdk "bin\flutter.bat") `
         -Arguments @("pub", "get") `
         -WorkingDirectory $appDir
+}
+
+if (-not $SkipRustBuild) {
+    Write-Step "构建 Android arm64 Rust 桥接库"
+    Invoke-Checked `
+        -FilePath $pwshExe `
+        -Arguments @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $PSScriptRoot "build_android_rust.ps1")
+        ) `
+        -WorkingDirectory $repoRoot
+}
+
+if (-not $SkipFfmpegBuild) {
+    Write-Step "构建 Android arm64 FFmpeg"
+    Invoke-Checked `
+        -FilePath $pwshExe `
+        -Arguments @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $PSScriptRoot "build_android_ffmpeg.ps1")
+        ) `
+        -WorkingDirectory $repoRoot
 }
 
 $modes = if ($BuildMode -eq "both") { @("debug", "release") } else { @($BuildMode) }
@@ -547,7 +588,8 @@ foreach ($mode in $modes) {
             -ExpectedCode $VersionCode
         Test-ApkNativeLibraries `
             -ApkPath $sourceApk `
-            -ExpectedAbi $androidAbi
+            -ExpectedAbi $androidAbi `
+            -RequireAppLibrary ($mode -eq "release")
     }
 
     Copy-Item -LiteralPath $sourceApk -Destination $targetApk -Force

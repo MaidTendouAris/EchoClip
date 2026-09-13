@@ -16,6 +16,19 @@ use cpal::{FromSample, Sample};
 use echoclip_core::{
     AudioConfig, CoreConfig, DEFAULT_SEGMENT_SECONDS, EchoCoreError, ExportJobState, ExportOptions,
     RecorderWorker,
+    scheduler::{
+        ActionResultState, DueExecution, ScheduledAction, ScheduledActionResult,
+        ScheduledExportFormat, Scheduler, now_utc_millis,
+    },
+    transcode_wav_to_mp3,
+};
+use echoclip_sync_client::{SyncClientConfig, UploadClient, test_connection};
+use echoclip_sync_protocol::UploadKey;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::LocalFree;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
 };
 
 pub const EC_OK: i32 = 0;
@@ -251,6 +264,7 @@ impl From<EchoCoreError> for FfiError {
 }
 
 struct RecorderHandle {
+    shutting_down: AtomicBool,
     config: CoreConfig,
     worker: RwLock<Option<RecorderWorker>>,
     capture: Mutex<Option<CaptureThread>>,
@@ -272,6 +286,12 @@ struct RecorderHandle {
     system_audio_silence_filled_samples: AtomicU64,
     capture_error: Mutex<Option<String>>,
     last_error: Mutex<CString>,
+    sync_config: Mutex<Option<SyncClientConfig>>,
+    sync_client: Mutex<Option<UploadClient>>,
+    sync_enabled: AtomicBool,
+    scheduler: Mutex<Scheduler>,
+    scheduler_runtime: Mutex<SchedulerRuntime>,
+    scheduler_thread: Mutex<Option<SchedulerThread>>,
 }
 
 struct CaptureThread {
@@ -279,10 +299,27 @@ struct CaptureThread {
     join_handle: thread::JoinHandle<()>,
 }
 
+#[derive(Default)]
+struct SchedulerRuntime {
+    recording_dir: Option<PathBuf>,
+    ffmpeg_path: Option<PathBuf>,
+}
+
+enum SchedulerSignal {
+    Wake,
+    Stop,
+}
+
+struct SchedulerThread {
+    sender: mpsc::Sender<SchedulerSignal>,
+    join_handle: thread::JoinHandle<()>,
+}
+
 impl RecorderHandle {
-    fn new(config: CoreConfig, worker: RecorderWorker) -> Self {
+    fn new(config: CoreConfig, worker: RecorderWorker, scheduler: Scheduler) -> Self {
         Self {
             config,
+            shutting_down: AtomicBool::new(false),
             worker: RwLock::new(Some(worker)),
             capture: Mutex::new(None),
             capture_selection: Mutex::new(CaptureSelection::default()),
@@ -303,6 +340,12 @@ impl RecorderHandle {
             system_audio_silence_filled_samples: AtomicU64::new(0),
             capture_error: Mutex::new(None),
             last_error: Mutex::new(empty_c_string()),
+            sync_config: Mutex::new(None),
+            sync_client: Mutex::new(None),
+            sync_enabled: AtomicBool::new(false),
+            scheduler: Mutex::new(scheduler),
+            scheduler_runtime: Mutex::new(SchedulerRuntime::default()),
+            scheduler_thread: Mutex::new(None),
         }
     }
 
@@ -407,13 +450,19 @@ fn create_impl(
     config.segment_seconds = DEFAULT_SEGMENT_SECONDS;
     config.max_replay_seconds = buffer_seconds;
     let worker = RecorderWorker::start(config.clone()).map_err(FfiError::from)?;
-    let handle = Arc::new(RecorderHandle::new(config, worker));
+    let scheduler = Scheduler::open(&config.work_dir).map_err(FfiError::core)?;
+    let handle = Arc::new(RecorderHandle::new(config, worker, scheduler));
 
     let mut entries = lock_mutex(registry());
     loop {
         let id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         if id != 0 && !entries.contains_key(&id) {
-            entries.insert(id, handle);
+            entries.insert(id, Arc::clone(&handle));
+            drop(entries);
+            if let Err(error) = start_scheduler_thread(&handle) {
+                lock_mutex(registry()).remove(&id);
+                return Err(error);
+            }
             return Ok(id);
         }
     }
@@ -436,12 +485,191 @@ fn destroy_impl(handle: u64) -> Result<(), FfiError> {
     let recorder = lock_mutex(registry())
         .remove(&handle)
         .ok_or_else(|| FfiError::invalid(format!("invalid handle: {handle}")))?;
+    recorder.shutting_down.store(true, Ordering::Release);
+    // Tell every producer to stop before joining any of them.
+    if let Some(client) = lock_mutex(&recorder.sync_client).as_ref() {
+        client.request_stop();
+    }
+    if let Some(worker) = read_lock(&recorder.worker).as_ref() {
+        for job in worker.status().export_jobs {
+            worker.cancel_export(job.id);
+        }
+    }
     stop_capture_thread(&recorder)?;
+    stop_scheduler_thread(&recorder)?;
+    stop_sync_client(&recorder);
     let mut worker = write_lock(&recorder.worker);
     if let Some(mut worker) = worker.take() {
         worker.stop();
     }
     Ok(())
+}
+
+#[unsafe(no_mangle)]
+/// Configures application-layer encrypted real-time upload for this recorder.
+///
+/// Disabling sync accepts null string pointers. Enabling requires an `http://`
+/// server URL, a base64 256-bit upload key, and a stable non-empty device ID.
+/// PCM remains inside Rust and is read from the shared core after durable
+/// commits; this call never routes PCM through Dart or the Windows runner.
+///
+/// # Safety
+///
+/// Non-null strings must be NUL-terminated UTF-8 and remain valid for this call.
+pub unsafe extern "C" fn ec_configure_sync(
+    handle: u64,
+    enabled: i32,
+    server_url_utf8: *const c_char,
+    upload_key_base64_utf8: *const c_char,
+    device_id_utf8: *const c_char,
+) -> i32 {
+    ffi_result(handle, || {
+        let enabled = ffi_bool(enabled, "enabled")?;
+        let recorder = get_handle(handle)?;
+        if !enabled {
+            recorder.sync_enabled.store(false, Ordering::Release);
+            stop_sync_client(&recorder);
+            recorder.clear_error();
+            return Ok(());
+        }
+        let server_url = unsafe { required_utf8(server_url_utf8, "server_url_utf8")? };
+        let upload_key =
+            unsafe { required_utf8(upload_key_base64_utf8, "upload_key_base64_utf8")? };
+        let device_id = unsafe { required_utf8(device_id_utf8, "device_id_utf8")? };
+        let key = UploadKey::from_base64(&upload_key).map_err(FfiError::core)?;
+        recorder.sync_enabled.store(true, Ordering::Release);
+        configure_sync_values(&recorder, server_url, key, device_id)?;
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Configures sync from a DPAPI-protected hex upload key without returning the
+/// plaintext key to Dart. Other arguments follow ec_configure_sync.
+///
+/// # Safety
+///
+/// Non-null strings must be NUL-terminated UTF-8 and remain valid for this call.
+pub unsafe extern "C" fn ec_configure_sync_protected(
+    handle: u64,
+    enabled: i32,
+    server_url_utf8: *const c_char,
+    protected_upload_key_hex_utf8: *const c_char,
+    device_id_utf8: *const c_char,
+) -> i32 {
+    ffi_result(handle, || {
+        let enabled = ffi_bool(enabled, "enabled")?;
+        let recorder = get_handle(handle)?;
+        if !enabled {
+            recorder.sync_enabled.store(false, Ordering::Release);
+            stop_sync_client(&recorder);
+        }
+        let server_url = unsafe { required_utf8(server_url_utf8, "server_url_utf8")? };
+        let protected = unsafe {
+            required_utf8(
+                protected_upload_key_hex_utf8,
+                "protected_upload_key_hex_utf8",
+            )?
+        };
+        let device_id = unsafe { required_utf8(device_id_utf8, "device_id_utf8")? };
+        let protected = hex_decode(&protected)?;
+        let mut plaintext = dpapi_unprotect(&protected)?;
+        let key_result = std::str::from_utf8(&plaintext)
+            .map_err(|_| FfiError::core("DPAPI upload key is not UTF-8"))
+            .and_then(|value| UploadKey::from_base64(value).map_err(FfiError::core));
+        plaintext.fill(0);
+        let key = key_result?;
+        recorder.sync_enabled.store(enabled, Ordering::Release);
+        configure_sync_values(&recorder, server_url, key, device_id)?;
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Tests an upload endpoint with a full authenticated probe and no PCM side effects.
+///
+/// # Safety
+///
+/// All strings must be non-null, NUL-terminated UTF-8 and valid for this call.
+pub unsafe extern "C" fn ec_test_sync_connection(
+    server_url_utf8: *const c_char,
+    upload_key_base64_utf8: *const c_char,
+    device_id_utf8: *const c_char,
+) -> i32 {
+    ffi_result(0, || {
+        let server_url = unsafe { required_utf8(server_url_utf8, "server_url_utf8")? };
+        let upload_key =
+            unsafe { required_utf8(upload_key_base64_utf8, "upload_key_base64_utf8")? };
+        let device_id = unsafe { required_utf8(device_id_utf8, "device_id_utf8")? };
+        let key = UploadKey::from_base64(&upload_key).map_err(FfiError::core)?;
+        test_connection(&SyncClientConfig::new(server_url, key, device_id)).map_err(FfiError::core)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Tests an upload endpoint while keeping the persisted key protected from Dart.
+///
+/// # Safety
+///
+/// All strings must be non-null, NUL-terminated UTF-8 and valid for this call.
+pub unsafe extern "C" fn ec_test_sync_connection_protected(
+    server_url_utf8: *const c_char,
+    protected_upload_key_hex_utf8: *const c_char,
+    device_id_utf8: *const c_char,
+) -> i32 {
+    ffi_result(0, || {
+        let server_url = unsafe { required_utf8(server_url_utf8, "server_url_utf8")? };
+        let protected = unsafe {
+            required_utf8(
+                protected_upload_key_hex_utf8,
+                "protected_upload_key_hex_utf8",
+            )?
+        };
+        let device_id = unsafe { required_utf8(device_id_utf8, "device_id_utf8")? };
+        let protected = hex_decode(&protected)?;
+        let mut plaintext = dpapi_unprotect(&protected)?;
+        let key_result = std::str::from_utf8(&plaintext)
+            .map_err(|_| FfiError::core("DPAPI upload key is not UTF-8"))
+            .and_then(|value| UploadKey::from_base64(value).map_err(FfiError::core));
+        plaintext.fill(0);
+        let key = key_result?;
+        test_connection(&SyncClientConfig::new(server_url, key, device_id)).map_err(FfiError::core)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Protects a UTF-8 secret with Windows DPAPI and returns a lowercase hex blob.
+/// The two-stage buffer contract matches ec_status_json.
+///
+/// # Safety
+///
+/// `secret_utf8` must be valid NUL-terminated UTF-8. When `output_utf8` is
+/// non-null, it must be writable for `output_capacity` bytes.
+pub unsafe extern "C" fn ec_protect_secret(
+    secret_utf8: *const c_char,
+    output_utf8: *mut c_char,
+    output_capacity: usize,
+) -> usize {
+    match std::panic::catch_unwind(|| {
+        let secret = unsafe { required_utf8(secret_utf8, "secret_utf8")? };
+        let protected = dpapi_protect(secret.as_bytes())?;
+        copy_utf8_result(&hex_encode(&protected), output_utf8, output_capacity)
+    }) {
+        Ok(Ok(required)) => {
+            set_global_error("");
+            required
+        }
+        Ok(Err(error)) => {
+            set_global_error(&error.message);
+            0
+        }
+        Err(_) => {
+            set_global_error("panic in ec_protect_secret");
+            0
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -600,6 +828,9 @@ fn start_capture_impl(handle: u64) -> Result<(), FfiError> {
 #[cfg(target_os = "windows")]
 fn start_capture_for_recorder(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
     let mut capture_slot = lock_mutex(&recorder.capture);
+    if recorder.shutting_down.load(Ordering::Acquire) {
+        return Err(stopped_error("application shutting down"));
+    }
     if capture_slot.is_some() && recorder.capture_running.load(Ordering::Acquire) {
         recorder.clear_error();
         return Ok(());
@@ -734,6 +965,9 @@ pub extern "C" fn ec_save_latest_wav(
             .map_err(FfiError::from)?;
 
         loop {
+            if recorder.shutting_down.load(Ordering::Acquire) {
+                worker.cancel_export(job_id);
+            }
             let job = worker.export_status(job_id).ok_or_else(|| {
                 FfiError::core(format!(
                     "export job disappeared before completion: {job_id}"
@@ -811,6 +1045,9 @@ pub extern "C" fn ec_save_latest(
             .map_err(FfiError::from)?;
 
         loop {
+            if recorder.shutting_down.load(Ordering::Acquire) {
+                worker.cancel_export(job_id);
+            }
             let job = worker.export_status(job_id).ok_or_else(|| {
                 FfiError::core(format!(
                     "export job disappeared before completion: {job_id}"
@@ -839,6 +1076,7 @@ pub extern "C" fn ec_save_latest(
 pub extern "C" fn ec_clear(handle: u64) -> i32 {
     ffi_result(handle, || {
         let recorder = get_handle(handle)?;
+        stop_sync_client(&recorder);
         stop_capture_thread(&recorder)?;
         let mut worker_slot = write_lock(&recorder.worker);
         if let Some(mut worker) = worker_slot.take() {
@@ -856,7 +1094,9 @@ pub extern "C" fn ec_clear(handle: u64) -> i32 {
         match restart_result {
             Ok(worker) => {
                 *worker_slot = Some(worker);
+                drop(worker_slot);
                 remove_result?;
+                start_configured_sync(&recorder)?;
                 recorder.clear_error();
                 Ok(())
             }
@@ -1033,6 +1273,27 @@ fn status_json_impl(
         "capture_error".to_string(),
         lock_mutex(&recorder.capture_error).clone().into(),
     );
+    fields.insert(
+        "sync_configured".to_string(),
+        lock_mutex(&recorder.sync_config).is_some().into(),
+    );
+    fields.insert(
+        "sync_enabled".to_string(),
+        recorder.sync_enabled.load(Ordering::Acquire).into(),
+    );
+    fields.insert(
+        "scheduler_next_wakeup_utc_millis".to_string(),
+        lock_mutex(&recorder.scheduler)
+            .next_wakeup_utc_millis()
+            .into(),
+    );
+    let sync_status = lock_mutex(&recorder.sync_client)
+        .as_ref()
+        .map(UploadClient::status);
+    fields.insert(
+        "sync".to_string(),
+        serde_json::to_value(sync_status).map_err(FfiError::core)?,
+    );
     let json = serde_json::to_string(&status).map_err(FfiError::core)?;
     let required = copy_utf8_result(&json, output_utf8, output_capacity)?;
     recorder.clear_error();
@@ -1063,6 +1324,154 @@ fn insert_source_runtime(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn ec_scheduler_configure_runtime(
+    handle: u64,
+    recording_dir_utf8: *const c_char,
+    ffmpeg_path_utf8: *const c_char,
+) -> i32 {
+    ffi_result(handle, || {
+        let recorder = get_handle(handle)?;
+        let recording_dir =
+            unsafe { optional_utf8(recording_dir_utf8, "recording_dir_utf8")? }.map(PathBuf::from);
+        let ffmpeg_path =
+            unsafe { optional_utf8(ffmpeg_path_utf8, "ffmpeg_path_utf8")? }.map(PathBuf::from);
+        if let Some(directory) = recording_dir.as_ref() {
+            if !directory.is_dir() {
+                return Err(FfiError::invalid(format!(
+                    "recording directory does not exist: {}",
+                    directory.display()
+                )));
+            }
+        }
+        let mut runtime = lock_mutex(&recorder.scheduler_runtime);
+        runtime.recording_dir = recording_dir;
+        runtime.ffmpeg_path = ffmpeg_path;
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_scheduler_snapshot_json(
+    handle: u64,
+    output_utf8: *mut c_char,
+    output_capacity: usize,
+) -> usize {
+    match std::panic::catch_unwind(|| {
+        let recorder = get_handle(handle)?;
+        let snapshot = lock_mutex(&recorder.scheduler).snapshot(now_utc_millis());
+        let runtime = lock_mutex(&recorder.scheduler_runtime);
+        let mut value = serde_json::to_value(snapshot).map_err(FfiError::core)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| FfiError::core("scheduler snapshot is not an object"))?;
+        object.insert("schedulingPrecision".to_string(), "exact".into());
+        object.insert("processResident".to_string(), true.into());
+        object.insert(
+            "recordingDestinationReady".to_string(),
+            runtime
+                .recording_dir
+                .as_ref()
+                .is_some_and(|path| path.is_dir())
+                .into(),
+        );
+        object.insert(
+            "ffmpegAvailable".to_string(),
+            runtime
+                .ffmpeg_path
+                .as_ref()
+                .is_some_and(|path| path.is_file())
+                .into(),
+        );
+        object.insert(
+            "uploadConfigured".to_string(),
+            lock_mutex(&recorder.sync_config).is_some().into(),
+        );
+        let json = serde_json::to_string(&value).map_err(FfiError::core)?;
+        let required = copy_utf8_result(&json, output_utf8, output_capacity)?;
+        recorder.clear_error();
+        Ok::<usize, FfiError>(required)
+    }) {
+        Ok(Ok(required)) => required,
+        Ok(Err(error)) => {
+            record_error(handle, &error.message);
+            0
+        }
+        Err(_) => {
+            record_error(handle, "panic in ec_scheduler_snapshot_json");
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ec_scheduler_upsert(handle: u64, task_json_utf8: *const c_char) -> i32 {
+    ffi_result(handle, || {
+        let recorder = get_handle(handle)?;
+        let json = unsafe { required_utf8(task_json_utf8, "task_json_utf8")? };
+        lock_mutex(&recorder.scheduler)
+            .editor_command_json(&json, now_utc_millis())
+            .map_err(FfiError::core)?;
+        wake_scheduler(&recorder);
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ec_scheduler_delete(handle: u64, task_id_utf8: *const c_char) -> i32 {
+    ffi_result(handle, || {
+        let recorder = get_handle(handle)?;
+        let id = unsafe { required_utf8(task_id_utf8, "task_id_utf8")? };
+        lock_mutex(&recorder.scheduler)
+            .delete(&id)
+            .map_err(FfiError::core)?;
+        wake_scheduler(&recorder);
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ec_scheduler_set_enabled(
+    handle: u64,
+    task_id_utf8: *const c_char,
+    expected_revision: u64,
+    enabled: i32,
+) -> i32 {
+    ffi_result(handle, || {
+        let recorder = get_handle(handle)?;
+        let id = unsafe { required_utf8(task_id_utf8, "task_id_utf8")? };
+        let enabled = ffi_bool(enabled, "enabled")?;
+        lock_mutex(&recorder.scheduler)
+            .set_enabled(
+                &id,
+                (expected_revision != 0).then_some(expected_revision),
+                enabled,
+                now_utc_millis(),
+            )
+            .map_err(FfiError::core)?;
+        wake_scheduler(&recorder);
+        recorder.clear_error();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ec_transcode_wav_to_mp3(
+    input_path_utf8: *const c_char,
+    output_path_utf8: *const c_char,
+    ffmpeg_path_utf8: *const c_char,
+    bitrate_kbps: u32,
+) -> i32 {
+    ffi_result(0, || {
+        let input = utf8_path(input_path_utf8, "input_path_utf8")?;
+        let output = utf8_path(output_path_utf8, "output_path_utf8")?;
+        let ffmpeg = utf8_path(ffmpeg_path_utf8, "ffmpeg_path_utf8")?;
+        transcode_wav_to_mp3(input, output, ffmpeg, bitrate_kbps).map_err(FfiError::from)
+    })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn ec_last_error(handle: u64) -> *const c_char {
     match std::panic::catch_unwind(|| {
         if handle == 0 {
@@ -1081,6 +1490,321 @@ pub extern "C" fn ec_last_error(handle: u64) -> *const c_char {
     }
 }
 
+fn start_scheduler_thread(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
+    let (sender, receiver) = mpsc::channel();
+    let thread_recorder = Arc::clone(recorder);
+    let join_handle = thread::Builder::new()
+        .name("echoclip-scheduler".to_string())
+        .spawn(move || scheduler_thread_main(thread_recorder, receiver))
+        .map_err(FfiError::core)?;
+    *lock_mutex(&recorder.scheduler_thread) = Some(SchedulerThread {
+        sender,
+        join_handle,
+    });
+    Ok(())
+}
+
+fn stop_scheduler_thread(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
+    let scheduler_thread = lock_mutex(&recorder.scheduler_thread).take();
+    if let Some(scheduler_thread) = scheduler_thread {
+        let _ = scheduler_thread.sender.send(SchedulerSignal::Stop);
+        scheduler_thread
+            .join_handle
+            .join()
+            .map_err(|_| FfiError::core("scheduler thread panicked"))?;
+    }
+    Ok(())
+}
+
+fn wake_scheduler(recorder: &Arc<RecorderHandle>) {
+    if let Some(scheduler_thread) = lock_mutex(&recorder.scheduler_thread).as_ref() {
+        let _ = scheduler_thread.sender.send(SchedulerSignal::Wake);
+    }
+}
+
+fn scheduler_thread_main(recorder: Arc<RecorderHandle>, receiver: mpsc::Receiver<SchedulerSignal>) {
+    loop {
+        let next_wakeup = lock_mutex(&recorder.scheduler).next_wakeup_utc_millis();
+        let signal = match next_wakeup {
+            Some(due) => {
+                let delay = due.saturating_sub(now_utc_millis()).max(0) as u64;
+                receiver.recv_timeout(Duration::from_millis(delay.min(86_400_000)))
+            }
+            None => match receiver.recv() {
+                Ok(signal) => {
+                    if matches!(signal, SchedulerSignal::Stop) {
+                        break;
+                    }
+                    continue;
+                }
+                Err(_) => break,
+            },
+        };
+        match signal {
+            Ok(SchedulerSignal::Stop) => break,
+            Ok(SchedulerSignal::Wake) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => run_due_executions(&recorder),
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn run_due_executions(recorder: &Arc<RecorderHandle>) {
+    if recorder.shutting_down.load(Ordering::Acquire) {
+        return;
+    }
+    let executions = match lock_mutex(&recorder.scheduler).tick(now_utc_millis()) {
+        Ok(executions) => executions,
+        Err(error) => {
+            recorder.set_error(&format!("scheduler_tick_failed:{error}"));
+            return;
+        }
+    };
+    for execution in executions {
+        let results = execute_due_execution(recorder, &execution);
+        if let Err(error) = lock_mutex(&recorder.scheduler).complete_execution(
+            &execution.execution_id,
+            results,
+            now_utc_millis(),
+        ) {
+            recorder.set_error(&format!("scheduler_complete_failed:{error}"));
+        }
+    }
+}
+
+fn execute_due_execution(
+    recorder: &Arc<RecorderHandle>,
+    execution: &DueExecution,
+) -> Vec<ScheduledActionResult> {
+    execution
+        .actions
+        .iter()
+        .map(|due| {
+            let result = if recorder.shutting_down.load(Ordering::Acquire) {
+                NativeActionResult::failed("EXECUTION_INTERRUPTED")
+            } else {
+                match &due.action {
+                    ScheduledAction::SetUploadEnabled { enabled } => {
+                        execute_scheduled_upload(recorder, *enabled)
+                    }
+                    ScheduledAction::StartRecording => execute_scheduled_start(recorder),
+                    ScheduledAction::StopRecording => execute_scheduled_stop(recorder),
+                    ScheduledAction::SaveRecent {
+                        seconds,
+                        format,
+                        mp3_bitrate_kbps,
+                        allow_partial,
+                    } => execute_scheduled_save(
+                        recorder,
+                        execution,
+                        *seconds,
+                        *format,
+                        *mp3_bitrate_kbps,
+                        *allow_partial,
+                    ),
+                }
+            };
+            ScheduledActionResult {
+                action_index: due.action_index,
+                state: result.state,
+                error_code: result.error_code,
+                output_uri: result.output_uri,
+                actual_duration_millis: result.actual_duration_millis,
+            }
+        })
+        .collect()
+}
+
+struct NativeActionResult {
+    state: ActionResultState,
+    error_code: Option<String>,
+    output_uri: Option<String>,
+    actual_duration_millis: Option<u64>,
+}
+
+impl NativeActionResult {
+    fn success() -> Self {
+        Self {
+            state: ActionResultState::Succeeded,
+            error_code: None,
+            output_uri: None,
+            actual_duration_millis: None,
+        }
+    }
+    fn no_op() -> Self {
+        Self {
+            state: ActionResultState::NoOp,
+            error_code: None,
+            output_uri: None,
+            actual_duration_millis: None,
+        }
+    }
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            state: ActionResultState::Failed,
+            error_code: Some(error.into()),
+            output_uri: None,
+            actual_duration_millis: None,
+        }
+    }
+}
+
+fn execute_scheduled_upload(recorder: &Arc<RecorderHandle>, enabled: bool) -> NativeActionResult {
+    let was_enabled = recorder.sync_enabled.swap(enabled, Ordering::AcqRel);
+    if was_enabled == enabled {
+        return NativeActionResult::no_op();
+    }
+    if !enabled {
+        stop_sync_client(recorder);
+        return NativeActionResult::success();
+    }
+    match start_configured_sync(recorder) {
+        Ok(()) => NativeActionResult::success(),
+        Err(error) => {
+            recorder.sync_enabled.store(false, Ordering::Release);
+            NativeActionResult::failed(error.message)
+        }
+    }
+}
+
+fn execute_scheduled_start(recorder: &Arc<RecorderHandle>) -> NativeActionResult {
+    if recorder.capture_running.load(Ordering::Acquire) {
+        return NativeActionResult::no_op();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return match start_capture_for_recorder(recorder) {
+            Ok(()) => NativeActionResult::success(),
+            Err(error) => {
+                NativeActionResult::failed(format!("RECORDING_START_FAILED:{}", error.message))
+            }
+        };
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = recorder;
+        NativeActionResult::failed("PLATFORM_SCHEDULING_UNAVAILABLE")
+    }
+}
+
+fn execute_scheduled_stop(recorder: &Arc<RecorderHandle>) -> NativeActionResult {
+    if !recorder.capture_running.load(Ordering::Acquire) {
+        return NativeActionResult::no_op();
+    }
+    match stop_capture_thread(recorder) {
+        Ok(()) => NativeActionResult::success(),
+        Err(error) => {
+            NativeActionResult::failed(format!("RECORDING_STOP_FAILED:{}", error.message))
+        }
+    }
+}
+
+fn execute_scheduled_save(
+    recorder: &Arc<RecorderHandle>,
+    execution: &DueExecution,
+    seconds: u32,
+    format: ScheduledExportFormat,
+    bitrate_kbps: u32,
+    allow_partial: bool,
+) -> NativeActionResult {
+    let runtime = lock_mutex(&recorder.scheduler_runtime);
+    let Some(recording_dir) = runtime.recording_dir.clone() else {
+        return NativeActionResult::failed("RECORDING_FOLDER_NOT_SELECTED");
+    };
+    let ffmpeg_path = runtime.ffmpeg_path.clone();
+    drop(runtime);
+
+    let worker_slot = read_lock(&recorder.worker);
+    let Some(worker) = worker_slot.as_ref() else {
+        return NativeActionResult::failed("RECORDER_WORKER_STOPPED");
+    };
+    let available_millis = worker.status().available_millis;
+    if available_millis == 0 {
+        return NativeActionResult::failed("EXPORT_BUFFER_EMPTY");
+    }
+    let requested_millis = u64::from(seconds) * 1_000;
+    if !allow_partial && available_millis < requested_millis {
+        return NativeActionResult::failed("EXPORT_RANGE_UNAVAILABLE");
+    }
+    let actual_millis = available_millis.min(requested_millis);
+    let extension = match format {
+        ScheduledExportFormat::Wav => "wav",
+        ScheduledExportFormat::Mp3 => "mp3",
+    };
+    let file_name = format!(
+        "echoclip-scheduled-{}-{}s.{}",
+        execution.scheduled_for_utc_millis,
+        actual_millis.div_ceil(1_000),
+        extension
+    );
+    let output_path = unique_scheduled_output(&recording_dir, &file_name);
+    let options = match format {
+        ScheduledExportFormat::Wav => ExportOptions::wav(),
+        ScheduledExportFormat::Mp3 => {
+            let Some(ffmpeg_path) = ffmpeg_path else {
+                return NativeActionResult::failed("FFMPEG_UNAVAILABLE");
+            };
+            ExportOptions::mp3(ffmpeg_path, bitrate_kbps)
+        }
+    };
+    let job_id = match worker.save_latest_async(seconds, &output_path, options) {
+        Ok(id) => id,
+        Err(error) => return NativeActionResult::failed(format!("EXPORT_FAILED:{error}")),
+    };
+    loop {
+        if recorder.shutting_down.load(Ordering::Acquire) {
+            worker.cancel_export(job_id);
+        }
+        let Some(job) = worker.export_status(job_id) else {
+            return NativeActionResult::failed("EXPORT_JOB_NOT_FOUND");
+        };
+        match job.state {
+            ExportJobState::Pending | ExportJobState::Running => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            ExportJobState::Finished => {
+                return NativeActionResult {
+                    state: if actual_millis < requested_millis {
+                        ActionResultState::Partial
+                    } else {
+                        ActionResultState::Succeeded
+                    },
+                    error_code: (actual_millis < requested_millis)
+                        .then(|| "EXPORT_PARTIAL_DURATION".to_string()),
+                    output_uri: Some(output_path.to_string_lossy().to_string()),
+                    actual_duration_millis: Some(actual_millis),
+                };
+            }
+            ExportJobState::Failed | ExportJobState::Canceled => {
+                return NativeActionResult::failed(
+                    job.error.unwrap_or_else(|| "EXPORT_FAILED".to_string()),
+                );
+            }
+        }
+    }
+}
+
+fn unique_scheduled_output(directory: &PathBuf, file_name: &str) -> PathBuf {
+    let base = directory.join(file_name);
+    if !base.exists() {
+        return base;
+    }
+    let stem = base
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("echoclip");
+    let extension = base
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp3");
+    for suffix in 2..10_000 {
+        let candidate = directory.join(format!("{stem}-{suffix}.{extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("{stem}-{}.{}", now_utc_millis(), extension))
+}
 fn stop_capture_thread(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
     let capture = lock_mutex(&recorder.capture).take();
     if let Some(capture) = capture {
@@ -1093,6 +1817,51 @@ fn stop_capture_thread(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
     *lock_mutex(&recorder.capture_runtime) = CaptureRuntimeInfo::default();
     recorder.reset_capture_metrics();
     Ok(())
+}
+
+fn stop_sync_client(recorder: &Arc<RecorderHandle>) {
+    if let Some(mut client) = lock_mutex(&recorder.sync_client).take() {
+        client.stop();
+    }
+}
+
+fn start_configured_sync(recorder: &Arc<RecorderHandle>) -> Result<(), FfiError> {
+    // Serialize activation with shutdown so a concurrent settings command cannot
+    // publish a new upload client after teardown has emptied the slot.
+    let mut client_slot = lock_mutex(&recorder.sync_client);
+    if recorder.shutting_down.load(Ordering::Acquire) {
+        return Err(stopped_error("application shutting down"));
+    }
+    if !recorder.sync_enabled.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let Some(config) = lock_mutex(&recorder.sync_config).clone() else {
+        return Err(FfiError::core("UPLOAD_NOT_CONFIGURED"));
+    };
+    let (commits, sync_handle) = {
+        let worker_slot = read_lock(&recorder.worker);
+        let worker = worker_slot
+            .as_ref()
+            .ok_or_else(|| stopped_error("recorder worker is stopped"))?;
+        (worker.subscribe_commits(8), worker.sync_handle())
+    };
+    let client = UploadClient::start(config, sync_handle, commits).map_err(FfiError::core)?;
+    *client_slot = Some(client);
+    Ok(())
+}
+
+fn configure_sync_values(
+    recorder: &Arc<RecorderHandle>,
+    server_url: String,
+    key: UploadKey,
+    device_id: String,
+) -> Result<(), FfiError> {
+    let config = SyncClientConfig::new(server_url, key, device_id);
+    // Validate and create the replacement before discarding persistent config.
+    // Network connection itself remains asynchronous and never blocks capture.
+    stop_sync_client(recorder);
+    *lock_mutex(&recorder.sync_config) = Some(config);
+    start_configured_sync(recorder)
 }
 
 fn stop_join_capture(
@@ -1680,6 +2449,126 @@ unsafe fn optional_utf8(pointer: *const c_char, name: &str) -> Result<Option<Str
     }
 }
 
+unsafe fn required_utf8(pointer: *const c_char, name: &str) -> Result<String, FfiError> {
+    let value = unsafe { optional_utf8(pointer, name)? }
+        .ok_or_else(|| FfiError::invalid(format!("{name} must not be null or empty")))?;
+    Ok(value)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, FfiError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
+        return Err(FfiError::invalid("protected secret hex is invalid"));
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_nibble(pair[0])?;
+            let low = hex_nibble(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+fn hex_nibble(value: u8) -> Result<u8, FfiError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(FfiError::invalid("protected secret hex is invalid")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>, FfiError> {
+    const ENTROPY: &[u8] = b"EchoClip/upload-key/v1";
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(plaintext.len())
+            .map_err(|_| FfiError::invalid("secret is too large"))?,
+        pbData: plaintext.as_ptr().cast_mut(),
+    };
+    let entropy = CRYPT_INTEGER_BLOB {
+        cbData: ENTROPY.len() as u32,
+        pbData: ENTROPY.as_ptr().cast_mut(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let success = unsafe {
+        CryptProtectData(
+            &input,
+            ptr::null(),
+            &entropy,
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if success == 0 {
+        return Err(FfiError::core(std::io::Error::last_os_error()));
+    }
+    let protected =
+        unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    unsafe {
+        LocalFree(output.pbData.cast());
+    }
+    Ok(protected)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dpapi_protect(_plaintext: &[u8]) -> Result<Vec<u8>, FfiError> {
+    Err(FfiError::core("DPAPI is only available on Windows"))
+}
+
+#[cfg(target_os = "windows")]
+fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>, FfiError> {
+    const ENTROPY: &[u8] = b"EchoClip/upload-key/v1";
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(protected.len())
+            .map_err(|_| FfiError::invalid("protected secret is too large"))?,
+        pbData: protected.as_ptr().cast_mut(),
+    };
+    let entropy = CRYPT_INTEGER_BLOB {
+        cbData: ENTROPY.len() as u32,
+        pbData: ENTROPY.as_ptr().cast_mut(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    let success = unsafe {
+        CryptUnprotectData(
+            &input,
+            ptr::null_mut(),
+            &entropy,
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if success == 0 {
+        return Err(FfiError::core(std::io::Error::last_os_error()));
+    }
+    let plaintext =
+        unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    unsafe {
+        LocalFree(output.pbData.cast());
+    }
+    Ok(plaintext)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dpapi_unprotect(_protected: &[u8]) -> Result<Vec<u8>, FfiError> {
+    Err(FfiError::core("DPAPI is only available on Windows"))
+}
+
 fn copy_utf8_result(
     value: &str,
     output_utf8: *mut c_char,
@@ -1748,6 +2637,38 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn shutdown_flushes_pcm_and_preserves_pending_tasks_without_waiting_for_due_time() {
+        let work_dir = unique_test_dir();
+        let path_c = CString::new(work_dir.to_string_lossy().as_bytes()).unwrap();
+        let handle = ec_create(path_c.as_ptr(), 4, 120);
+        assert_ne!(handle, 0);
+        let samples: Vec<i16> = (0..244).map(|v| v as i16).collect();
+        assert_eq!(
+            unsafe { ec_push_pcm(handle, samples.as_ptr(), samples.len()) },
+            EC_OK
+        );
+        let task = CString::new(r#"{"name":"keep me","enabled":true,"trigger":{"type":"countdown","delayMillis":60000},"actions":[{"type":"stop_recording"}]}"#).unwrap();
+        assert_eq!(unsafe { ec_scheduler_upsert(handle, task.as_ptr()) }, EC_OK);
+        let start = std::time::Instant::now();
+        destroy_impl(handle).unwrap();
+        let elapsed = start.elapsed();
+        eprintln!("recorder shutdown and flush: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1));
+        let restored = ec_create(path_c.as_ptr(), 4, 120);
+        assert_ne!(restored, 0);
+        assert_eq!(ec_available_millis(restored), 61_000);
+        assert_eq!(
+            lock_mutex(&get_handle(restored).unwrap().scheduler)
+                .snapshot(now_utc_millis())
+                .tasks[0]
+                .name,
+            "keep me"
+        );
+        ec_destroy(restored);
+        fs::remove_dir_all(work_dir).unwrap();
+    }
+
+    #[test]
     fn ffi_reuses_segmented_core_and_exports_across_segments() {
         let work_dir = unique_test_dir();
         let output = work_dir.join("latest.wav");
@@ -1784,6 +2705,17 @@ mod tests {
         assert_eq!(ec_status(handle), 0);
         ec_destroy(handle);
         let _ = fs::remove_dir_all(work_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn upload_key_secret_round_trips_through_windows_dpapi() {
+        let plaintext = b"test-upload-key-base64-value";
+        let protected = dpapi_protect(plaintext).unwrap();
+        assert_ne!(protected, plaintext);
+        let encoded = hex_encode(&protected);
+        assert_eq!(hex_decode(&encoded).unwrap(), protected);
+        assert_eq!(dpapi_unprotect(&protected).unwrap(), plaintext);
     }
 
     #[cfg(target_os = "windows")]

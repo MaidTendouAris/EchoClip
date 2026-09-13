@@ -41,3 +41,6 @@ third_party/ffmpeg/versions.local.txt
 Thumbs.db
 *.log
 *.tmp
+
+# JVM crash heap dumps
+*.hprof

@@ -118,6 +118,117 @@ object RustAudioCore {
         }.getOrDefault(false)
     }
 
+    fun testSyncConnection(
+        serverUrl: String,
+        uploadKeyBase64: String,
+        deviceId: String,
+    ): Map<String, Any?> {
+        if (!nativeAvailable) {
+            return mapOf(
+                "success" to false,
+                "error" to "rust_native_unavailable",
+            )
+        }
+        return runCatching {
+            val value = JSONObject(
+                nativeTestSyncConnection(serverUrl, uploadKeyBase64, deviceId),
+            )
+            mapOf(
+                "success" to value.optBoolean("success", false),
+                "error" to value.optString("error").ifBlank { null },
+            )
+        }.getOrElse {
+            mapOf(
+                "success" to false,
+                "error" to "connection_test_failed:${it.message}",
+            )
+        }
+    }
+
+    fun configureSync(
+        handle: Long,
+        enabled: Boolean,
+        serverUrl: String,
+        uploadKeyBase64: String,
+        deviceId: String,
+    ): Boolean {
+        if (!nativeAvailable || handle == 0L) {
+            return false
+        }
+        return runCatching {
+            nativeConfigureSync(
+                handle,
+                if (enabled) 1 else 0,
+                serverUrl,
+                uploadKeyBase64,
+                deviceId,
+            ) == 0
+        }.getOrDefault(false)
+    }
+
+    fun scheduleSnapshot(dataDir: String): String =
+        scheduleCall { nativeScheduleSnapshot(dataDir) }
+
+    fun scheduleUpsert(dataDir: String, taskJson: String): String =
+        scheduleCall { nativeScheduleUpsert(dataDir, taskJson) }
+
+    fun scheduleDelete(dataDir: String, taskId: String): String =
+        scheduleCall { nativeScheduleDelete(dataDir, taskId) }
+
+    fun scheduleSetEnabled(
+        dataDir: String,
+        taskId: String,
+        expectedRevision: Long,
+        enabled: Boolean,
+    ): String = scheduleCall {
+        nativeScheduleSetEnabled(
+            dataDir,
+            taskId,
+            expectedRevision,
+            if (enabled) 1 else 0,
+        )
+    }
+
+    fun scheduleTick(dataDir: String): String =
+        scheduleCall { nativeScheduleTick(dataDir) }
+
+    fun scheduleComplete(
+        dataDir: String,
+        executionId: String,
+        resultsJson: String,
+    ): String = scheduleCall {
+        nativeScheduleComplete(dataDir, executionId, resultsJson)
+    }
+
+    fun transcodeWavToMp3(
+        inputPath: String,
+        outputPath: String,
+        ffmpegPath: String,
+        bitrateKbps: Int,
+    ): Boolean {
+        if (!nativeAvailable) {
+            return false
+        }
+        return runCatching {
+            nativeTranscodeWavToMp3(
+                inputPath,
+                outputPath,
+                ffmpegPath,
+                bitrateKbps,
+            ) == 0
+        }.getOrDefault(false)
+    }
+
+    private fun scheduleCall(action: () -> String): String {
+        if (!nativeAvailable) {
+            return JSONObject().put("error", "rust_native_unavailable").toString()
+        }
+        return runCatching(action).getOrElse {
+            JSONObject()
+                .put("error", "schedule_native_failed:${it.message}")
+                .toString()
+        }
+    }
     private external fun nativeStartRecorder(
         tempDir: String,
         sampleRate: Int,
@@ -142,6 +253,39 @@ object RustAudioCore {
     private external fun nativeStatusJson(handle: Long): String
     private external fun nativeExportStatusJson(handle: Long, jobId: Long): String
     private external fun nativeCancelExport(handle: Long, jobId: Long): Int
+    private external fun nativeTestSyncConnection(
+        serverUrl: String,
+        uploadKeyBase64: String,
+        deviceId: String,
+    ): String
+    private external fun nativeConfigureSync(
+        handle: Long,
+        enabled: Int,
+        serverUrl: String,
+        uploadKeyBase64: String,
+        deviceId: String,
+    ): Int
+    private external fun nativeScheduleSnapshot(dataDir: String): String
+    private external fun nativeScheduleUpsert(dataDir: String, taskJson: String): String
+    private external fun nativeScheduleDelete(dataDir: String, taskId: String): String
+    private external fun nativeScheduleSetEnabled(
+        dataDir: String,
+        taskId: String,
+        expectedRevision: Long,
+        enabled: Int,
+    ): String
+    private external fun nativeScheduleTick(dataDir: String): String
+    private external fun nativeScheduleComplete(
+        dataDir: String,
+        executionId: String,
+        resultsJson: String,
+    ): String
+    private external fun nativeTranscodeWavToMp3(
+        inputPath: String,
+        outputPath: String,
+        ffmpegPath: String,
+        bitrateKbps: Int,
+    ): Int
 }
 
 object PushCode {
@@ -173,6 +317,8 @@ data class RustRecorderStatus(
     val recovered: Boolean = false,
     val recoveryWarning: String? = null,
     val lastError: String? = null,
+    val syncConfigured: Boolean = false,
+    val sync: RustSyncStatus? = null,
 ) {
     companion object {
         fun fromJson(json: String?): RustRecorderStatus {
@@ -207,10 +353,78 @@ data class RustRecorderStatus(
                     recovered = value.optBoolean("recovered"),
                     recoveryWarning = value.optString("recovery_warning").ifBlank { null },
                     lastError = value.optString("last_error").ifBlank { null },
+                    syncConfigured = value.optBoolean("sync_configured"),
+                    sync = RustSyncStatus.fromJson(value.optJSONObject("sync")),
                 )
             }.getOrElse {
                 RustRecorderStatus(lastError = "status_parse_failed:${it.message}")
             }
+        }
+    }
+}
+
+data class RustSyncStatus(
+    val running: Boolean,
+    val connected: Boolean,
+    val serverUrl: String,
+    val keyId: String,
+    val serverStreamId: String?,
+    val localTotalSamples: Long,
+    val remoteNextSample: Long,
+    val lagSamples: Long,
+    val lastSuccessUnixSeconds: Long,
+    val reconnectCount: Long,
+    val lastError: String?,
+    val logs: List<Map<String, Any?>>,
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "running" to running,
+        "connected" to connected,
+        "serverUrl" to serverUrl,
+        "keyId" to keyId,
+        "serverStreamId" to serverStreamId,
+        "localTotalSamples" to localTotalSamples,
+        "remoteNextSample" to remoteNextSample,
+        "lagSamples" to lagSamples,
+        "lastSuccessUnixSeconds" to lastSuccessUnixSeconds,
+        "reconnectCount" to reconnectCount,
+        "lastError" to lastError,
+        "logs" to logs,
+    )
+
+    companion object {
+        fun fromJson(value: JSONObject?): RustSyncStatus? {
+            if (value == null) {
+                return null
+            }
+            return RustSyncStatus(
+                running = value.optBoolean("running"),
+                connected = value.optBoolean("connected"),
+                serverUrl = value.optString("server_url"),
+                keyId = value.optString("key_id"),
+                serverStreamId = value.optString("server_stream_id").ifBlank { null },
+                localTotalSamples = value.optLong("local_total_samples"),
+                remoteNextSample = value.optLong("remote_next_sample"),
+                lagSamples = value.optLong("lag_samples"),
+                lastSuccessUnixSeconds = value.optLong("last_success_unix_seconds"),
+                reconnectCount = value.optLong("reconnect_count"),
+                lastError = value.optString("last_error").ifBlank { null },
+                logs = buildList {
+                    val entries = value.optJSONArray("logs")
+                    if (entries != null) {
+                        for (index in 0 until entries.length()) {
+                            val entry = entries.optJSONObject(index) ?: continue
+                            add(
+                                mapOf(
+                                    "unixSeconds" to entry.optLong("unix_seconds"),
+                                    "event" to entry.optString("event"),
+                                    "message" to entry.optString("message"),
+                                ),
+                            )
+                        }
+                    }
+                },
+            )
         }
     }
 }

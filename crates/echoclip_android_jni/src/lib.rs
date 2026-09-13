@@ -1,13 +1,46 @@
+use std::collections::HashMap;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
-use echoclip_core::{AudioConfig, CoreConfig, ExportFormat, ExportOptions, RecorderWorker};
+use echoclip_core::{
+    AudioConfig, CoreConfig, ExportFormat, ExportOptions, RecorderWorker,
+    scheduler::{ScheduledActionResult, Scheduler, now_utc_millis},
+    transcode_wav_to_mp3,
+};
+use echoclip_sync_client::{SyncClientConfig, UploadClient, test_connection};
+use echoclip_sync_protocol::UploadKey;
 use jni::JNIEnv;
 use jni::objects::{JObject, JShortArray, JString};
 use jni::sys::{jint, jlong, jstring};
 
-type WorkerHandle = RecorderWorker;
+struct WorkerHandle {
+    worker: RecorderWorker,
+    sync_client: Mutex<Option<UploadClient>>,
+}
+
+impl WorkerHandle {
+    fn new(worker: RecorderWorker) -> Self {
+        Self {
+            worker,
+            sync_client: Mutex::new(None),
+        }
+    }
+
+    fn stop_sync(&self) {
+        if let Some(mut client) = self.sync_client.lock().expect("sync client lock").take() {
+            client.stop();
+        }
+    }
+}
+
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        self.stop_sync();
+        self.worker.stop();
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStartRecorder(
@@ -32,7 +65,7 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStartRecor
 
         let worker =
             RecorderWorker::start_with_queue(config, queue_capacity_chunks.max(1) as usize)?;
-        Ok(Box::into_raw(Box::new(worker)) as jlong)
+        Ok(Box::into_raw(Box::new(WorkerHandle::new(worker))) as jlong)
     })
 }
 
@@ -59,7 +92,8 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStopRecord
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Some(worker) = worker_mut(handle) {
-            worker.stop();
+            worker.stop_sync();
+            worker.worker.stop();
         }
     }));
 }
@@ -84,7 +118,7 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativePushPcm(
 
         let mut input = vec![0_i16; available as usize];
         env.get_short_array_region(&samples, 0, &mut input)?;
-        match worker.push_samples(&input) {
+        match worker.worker.push_samples(&input) {
             Ok(()) => Ok(0),
             Err(error) => {
                 let text = error.to_string();
@@ -110,7 +144,7 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeAvailableM
 ) -> jlong {
     catch_jni_long(|| {
         let worker = worker_ref(handle)?;
-        Ok(worker.status().available_millis as jlong)
+        Ok(worker.worker.status().available_millis as jlong)
     })
 }
 
@@ -139,7 +173,9 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeSaveLatest
                 Some(PathBuf::from(ffmpeg_path))
             },
         };
-        Ok(worker.save_latest_async(seconds.max(1) as u32, output_path, options)? as jlong)
+        Ok(worker
+            .worker
+            .save_latest_async(seconds.max(1) as u32, output_path, options)? as jlong)
     })
 }
 
@@ -151,7 +187,19 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStatusJson
 ) -> jstring {
     catch_jni_string(env, || {
         let worker = worker_ref(handle)?;
-        Ok(serde_json::to_string(&worker.status())?)
+        let mut status = serde_json::to_value(worker.worker.status())?;
+        let fields = status
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("core status is not an object"))?;
+        let sync = worker
+            .sync_client
+            .lock()
+            .expect("sync client lock")
+            .as_ref()
+            .map(UploadClient::status);
+        fields.insert("sync_configured".to_string(), sync.is_some().into());
+        fields.insert("sync".to_string(), serde_json::to_value(sync)?);
+        Ok(serde_json::to_string(&status)?)
     })
 }
 
@@ -164,7 +212,7 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeExportStat
 ) -> jstring {
     catch_jni_string(env, || {
         let worker = worker_ref(handle)?;
-        match worker.export_status(job_id as u64) {
+        match worker.worker.export_status(job_id as u64) {
             Some(status) => Ok(serde_json::to_string(&status)?),
             None => Ok(format!(
                 "{{\"id\":{},\"state\":\"Failed\",\"error\":\"job_not_found\"}}",
@@ -183,7 +231,7 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeCancelExpo
 ) -> jint {
     catch_jni_int(|| {
         let worker = worker_ref(handle)?;
-        Ok(if worker.cancel_export(job_id as u64) {
+        Ok(if worker.worker.cancel_export(job_id as u64) {
             0
         } else {
             1
@@ -191,6 +239,231 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeCancelExpo
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeConfigureSync(
+    mut env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+    enabled: jint,
+    server_url: JString,
+    upload_key_base64: JString,
+    device_id: JString,
+) -> jint {
+    catch_jni_int(|| {
+        let recorder = worker_ref(handle)?;
+        if enabled == 0 {
+            recorder.stop_sync();
+            return Ok(0);
+        }
+        if enabled != 1 {
+            return Ok(3);
+        }
+        let server_url = java_string(&mut env, &server_url)?;
+        let upload_key_base64 = java_string(&mut env, &upload_key_base64)?;
+        let device_id = java_string(&mut env, &device_id)?;
+        let key = UploadKey::from_base64(&upload_key_base64)?;
+        let config = SyncClientConfig::new(server_url, key, device_id);
+        let commits = recorder.worker.subscribe_commits(8);
+        let sync_handle = recorder.worker.sync_handle();
+        let client = UploadClient::start(config, sync_handle, commits)?;
+        recorder.stop_sync();
+        *recorder.sync_client.lock().expect("sync client lock") = Some(client);
+        Ok(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeTestSyncConnection(
+    mut env: JNIEnv,
+    _this: JObject,
+    server_url: JString,
+    upload_key_base64: JString,
+    device_id: JString,
+) -> jstring {
+    let arguments = (|| {
+        Ok::<_, Box<dyn std::error::Error>>((
+            java_string(&mut env, &server_url)?,
+            java_string(&mut env, &upload_key_base64)?,
+            java_string(&mut env, &device_id)?,
+        ))
+    })();
+    catch_jni_string(env, move || {
+        let (server_url, upload_key_base64, device_id) = arguments?;
+        let key = UploadKey::from_base64(&upload_key_base64)?;
+        let config = SyncClientConfig::new(server_url, key, device_id);
+        test_connection(&config)?;
+        Ok("{\"success\":true}".to_string())
+    })
+}
+
+fn scheduler_registry() -> &'static Mutex<HashMap<String, Scheduler>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, Scheduler>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_scheduler<T>(
+    data_dir: String,
+    action: impl FnOnce(&mut Scheduler) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let mut registry = scheduler_registry()
+        .lock()
+        .expect("scheduler registry lock");
+    if !registry.contains_key(&data_dir) {
+        registry.insert(data_dir.clone(), Scheduler::open(&data_dir)?);
+    }
+    action(registry.get_mut(&data_dir).expect("scheduler inserted"))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleSnapshot(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+) -> jstring {
+    let data_dir = java_string(&mut env, &data_dir);
+    catch_jni_string(env, move || {
+        let data_dir = data_dir?;
+        with_scheduler(data_dir, |scheduler| {
+            Ok(scheduler.snapshot_json(now_utc_millis())?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleUpsert(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+    task_json: JString,
+) -> jstring {
+    let arguments = (|| {
+        Ok::<_, Box<dyn std::error::Error>>((
+            java_string(&mut env, &data_dir)?,
+            java_string(&mut env, &task_json)?,
+        ))
+    })();
+    catch_jni_string(env, move || {
+        let (data_dir, task_json) = arguments?;
+        with_scheduler(data_dir, |scheduler| {
+            scheduler.editor_command_json(&task_json, now_utc_millis())?;
+            Ok(scheduler.snapshot_json(now_utc_millis())?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleDelete(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+    task_id: JString,
+) -> jstring {
+    let arguments = (|| {
+        Ok::<_, Box<dyn std::error::Error>>((
+            java_string(&mut env, &data_dir)?,
+            java_string(&mut env, &task_id)?,
+        ))
+    })();
+    catch_jni_string(env, move || {
+        let (data_dir, task_id) = arguments?;
+        with_scheduler(data_dir, |scheduler| {
+            scheduler.delete(&task_id)?;
+            Ok(scheduler.snapshot_json(now_utc_millis())?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleSetEnabled(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+    task_id: JString,
+    expected_revision: jlong,
+    enabled: jint,
+) -> jstring {
+    let arguments = (|| {
+        Ok::<_, Box<dyn std::error::Error>>((
+            java_string(&mut env, &data_dir)?,
+            java_string(&mut env, &task_id)?,
+        ))
+    })();
+    catch_jni_string(env, move || {
+        let (data_dir, task_id) = arguments?;
+        with_scheduler(data_dir, |scheduler| {
+            scheduler.set_enabled(
+                &task_id,
+                (expected_revision > 0).then_some(expected_revision as u64),
+                enabled == 1,
+                now_utc_millis(),
+            )?;
+            Ok(scheduler.snapshot_json(now_utc_millis())?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleTick(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+) -> jstring {
+    let data_dir = java_string(&mut env, &data_dir);
+    catch_jni_string(env, move || {
+        let data_dir = data_dir?;
+        with_scheduler(data_dir, |scheduler| {
+            Ok(serde_json::to_string(&scheduler.tick(now_utc_millis())?)?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeScheduleComplete(
+    mut env: JNIEnv,
+    _this: JObject,
+    data_dir: JString,
+    execution_id: JString,
+    results_json: JString,
+) -> jstring {
+    let arguments = (|| {
+        Ok::<_, Box<dyn std::error::Error>>((
+            java_string(&mut env, &data_dir)?,
+            java_string(&mut env, &execution_id)?,
+            java_string(&mut env, &results_json)?,
+        ))
+    })();
+    catch_jni_string(env, move || {
+        let (data_dir, execution_id, results_json) = arguments?;
+        let results: Vec<ScheduledActionResult> = serde_json::from_str(&results_json)?;
+        with_scheduler(data_dir, |scheduler| {
+            scheduler.complete_execution(&execution_id, results, now_utc_millis())?;
+            Ok(scheduler.snapshot_json(now_utc_millis())?)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeTranscodeWavToMp3(
+    mut env: JNIEnv,
+    _this: JObject,
+    input_path: JString,
+    output_path: JString,
+    ffmpeg_path: JString,
+    bitrate_kbps: jint,
+) -> jint {
+    catch_jni_int(|| {
+        let input_path = java_string(&mut env, &input_path)?;
+        let output_path = java_string(&mut env, &output_path)?;
+        let ffmpeg_path = java_string(&mut env, &ffmpeg_path)?;
+        transcode_wav_to_mp3(
+            input_path,
+            output_path,
+            ffmpeg_path,
+            bitrate_kbps.max(32) as u32,
+        )?;
+        Ok(0)
+    })
+}
 fn worker_ref(handle: jlong) -> Result<&'static WorkerHandle, io::Error> {
     if handle == 0 {
         return Err(io::Error::new(

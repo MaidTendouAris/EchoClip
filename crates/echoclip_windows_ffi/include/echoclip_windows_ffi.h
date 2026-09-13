@@ -54,6 +54,41 @@ ECHOCLIP_API int32_t ec_configure_capture(
 ECHOCLIP_API int32_t ec_start_capture(uint64_t handle);
 ECHOCLIP_API int32_t ec_stop_capture(uint64_t handle);
 
+// Enables/disables application-layer encrypted real-time upload. When enabled,
+// server_url must use http://, upload_key must be a base64 256-bit key, and
+// device_id must be stable and non-empty. PCM is read from the shared Rust core
+// after it is durably committed; it never passes through Flutter/Dart.
+ECHOCLIP_API int32_t ec_configure_sync(
+    uint64_t handle,
+    int32_t enabled,
+    const char *server_url_utf8,
+    const char *upload_key_base64_utf8,
+    const char *device_id_utf8);
+ECHOCLIP_API int32_t ec_configure_sync_protected(
+    uint64_t handle,
+    int32_t enabled,
+    const char *server_url_utf8,
+    const char *protected_upload_key_hex_utf8,
+    const char *device_id_utf8);
+
+// Performs a side-effect-free authenticated upload-protocol round trip.
+ECHOCLIP_API int32_t ec_test_sync_connection(
+    const char *server_url_utf8,
+    const char *upload_key_base64_utf8,
+    const char *device_id_utf8);
+ECHOCLIP_API int32_t ec_test_sync_connection_protected(
+    const char *server_url_utf8,
+    const char *protected_upload_key_hex_utf8,
+    const char *device_id_utf8);
+
+// Protects upload-key text with Windows DPAPI using the usual two-stage UTF-8
+// buffer contract and reports errors through ec_last_error(0). The protected
+// hex representation may be stored in app preferences. Decryption is kept
+// internal to ec_configure_sync_protected so plaintext cannot return to Dart.
+ECHOCLIP_API uintptr_t ec_protect_secret(const char *secret_utf8,
+                                         char *output_utf8,
+                                         uintptr_t output_capacity);
+
 // Test/diagnostic injection only. Production capture uses ec_start_capture.
 // sample_count is a count of int16_t mono samples, not a byte count.
 ECHOCLIP_API int32_t ec_push_pcm(uint64_t handle,
@@ -78,11 +113,38 @@ ECHOCLIP_API int32_t ec_status(uint64_t handle);
 // fields are augmented with capture_running, capture_mode, source selections,
 // active microphone/system device details, negotiated source formats, mixed
 // and per-source levels, bounded-timeline drop/silence counters, capability
-// flags, and capture_error. recorder_sample_rate is the post-resampling and
-// post-mix core rate.
+// flags, capture_error, sync_configured, and the encrypted upload status/logs.
+// recorder_sample_rate is the post-resampling and post-mix core rate.
 ECHOCLIP_API uintptr_t ec_status_json(uint64_t handle,
                                      char *output_utf8,
                                      uintptr_t output_capacity);
+
+// Configures platform-only values used by Rust Core scheduled effects. Empty
+// paths clear the corresponding capability; task definitions remain in Core.
+ECHOCLIP_API int32_t ec_scheduler_configure_runtime(
+    uint64_t handle,
+    const char *recording_dir_utf8,
+    const char *ffmpeg_path_utf8);
+ECHOCLIP_API uintptr_t ec_scheduler_snapshot_json(
+    uint64_t handle,
+    char *output_utf8,
+    uintptr_t output_capacity);
+ECHOCLIP_API int32_t ec_scheduler_upsert(uint64_t handle,
+                                        const char *task_json_utf8);
+ECHOCLIP_API int32_t ec_scheduler_delete(uint64_t handle,
+                                        const char *task_id_utf8);
+ECHOCLIP_API int32_t ec_scheduler_set_enabled(uint64_t handle,
+                                             const char *task_id_utf8,
+                                             uint64_t expected_revision,
+                                             int32_t enabled);
+
+// Narrow retained conversion capability after the general processing module
+// is removed. The input WAV is never overwritten.
+ECHOCLIP_API int32_t ec_transcode_wav_to_mp3(
+    const char *input_path_utf8,
+    const char *output_path_utf8,
+    const char *ffmpeg_path_utf8,
+    uint32_t bitrate_kbps);
 
 // The returned UTF-8 string is owned by the DLL. Do not free it. It remains
 // valid until the next call that changes the error for this handle, or destroy.

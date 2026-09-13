@@ -14,36 +14,48 @@ typedef _AudioDevicesJsonDart = int Function(Pointer<Uint8>, int);
 typedef _ConfigureCaptureNative =
     Int32 Function(Uint64, Int32, Int32, Pointer<Utf8>);
 typedef _ConfigureCaptureDart = int Function(int, int, int, Pointer<Utf8>);
+typedef _ConfigureSyncNative =
+    Int32 Function(Uint64, Int32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _ConfigureSyncDart =
+    int Function(int, int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _TestSyncNative =
+    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _TestSyncDart =
+    int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
 typedef _CaptureCommandNative = Int32 Function(Uint64);
 typedef _CaptureCommandDart = int Function(int);
 typedef _AvailableMillisNative = Uint64 Function(Uint64);
 typedef _AvailableMillisDart = int Function(int);
 typedef _SaveLatestWavNative = Int32 Function(Uint64, Uint32, Pointer<Utf8>);
 typedef _SaveLatestWavDart = int Function(int, int, Pointer<Utf8>);
-typedef _SaveLatestNative = Int32 Function(
-  Uint64,
-  Uint32,
-  Int32,
-  Uint32,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef _SaveLatestDart = int Function(
-  int,
-  int,
-  int,
-  int,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef _SaveLatestNative =
+    Int32 Function(Uint64, Uint32, Int32, Uint32, Pointer<Utf8>, Pointer<Utf8>);
+typedef _SaveLatestDart =
+    int Function(int, int, int, int, Pointer<Utf8>, Pointer<Utf8>);
 typedef _ClearNative = Int32 Function(Uint64);
 typedef _ClearDart = int Function(int);
 typedef _StatusNative = Int32 Function(Uint64);
 typedef _StatusDart = int Function(int);
 typedef _StatusJsonNative = UintPtr Function(Uint64, Pointer<Uint8>, UintPtr);
 typedef _StatusJsonDart = int Function(int, Pointer<Uint8>, int);
+typedef _SchedulerConfigureNative =
+    Int32 Function(Uint64, Pointer<Utf8>, Pointer<Utf8>);
+typedef _SchedulerConfigureDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>);
+typedef _SchedulerStringCommandNative = Int32 Function(Uint64, Pointer<Utf8>);
+typedef _SchedulerStringCommandDart = int Function(int, Pointer<Utf8>);
+typedef _SchedulerSetEnabledNative =
+    Int32 Function(Uint64, Pointer<Utf8>, Uint64, Int32);
+typedef _SchedulerSetEnabledDart = int Function(int, Pointer<Utf8>, int, int);
+typedef _TranscodeNative =
+    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Uint32);
+typedef _TranscodeDart =
+    int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, int);
 typedef _LastErrorNative = Pointer<Utf8> Function(Uint64);
 typedef _LastErrorDart = Pointer<Utf8> Function(int);
+typedef _SecretTransformNative =
+    UintPtr Function(Pointer<Utf8>, Pointer<Uint8>, UintPtr);
+typedef _SecretTransformDart = int Function(Pointer<Utf8>, Pointer<Uint8>, int);
 
 /// Thin, synchronous binding for `echoclip_windows_ffi.dll`.
 ///
@@ -63,6 +75,22 @@ final class WindowsReplayFfi {
       _configureCapture = library
           .lookupFunction<_ConfigureCaptureNative, _ConfigureCaptureDart>(
             'ec_configure_capture',
+          ),
+      _configureSync = library
+          .lookupFunction<_ConfigureSyncNative, _ConfigureSyncDart>(
+            'ec_configure_sync',
+          ),
+      _configureSyncProtected = library
+          .lookupFunction<_ConfigureSyncNative, _ConfigureSyncDart>(
+            'ec_configure_sync_protected',
+          ),
+      _testSyncConnection = library
+          .lookupFunction<_TestSyncNative, _TestSyncDart>(
+            'ec_test_sync_connection',
+          ),
+      _testSyncConnectionProtected = library
+          .lookupFunction<_TestSyncNative, _TestSyncDart>(
+            'ec_test_sync_connection_protected',
           ),
       _startCapture = library
           .lookupFunction<_CaptureCommandNative, _CaptureCommandDart>(
@@ -88,9 +116,38 @@ final class WindowsReplayFfi {
       _statusJson = library.lookupFunction<_StatusJsonNative, _StatusJsonDart>(
         'ec_status_json',
       ),
+      _schedulerConfigure = library
+          .lookupFunction<_SchedulerConfigureNative, _SchedulerConfigureDart>(
+            'ec_scheduler_configure_runtime',
+          ),
+      _schedulerSnapshot = library
+          .lookupFunction<_StatusJsonNative, _StatusJsonDart>(
+            'ec_scheduler_snapshot_json',
+          ),
+      _schedulerUpsert = library
+          .lookupFunction<
+            _SchedulerStringCommandNative,
+            _SchedulerStringCommandDart
+          >('ec_scheduler_upsert'),
+      _schedulerDelete = library
+          .lookupFunction<
+            _SchedulerStringCommandNative,
+            _SchedulerStringCommandDart
+          >('ec_scheduler_delete'),
+      _schedulerSetEnabled = library
+          .lookupFunction<_SchedulerSetEnabledNative, _SchedulerSetEnabledDart>(
+            'ec_scheduler_set_enabled',
+          ),
+      _transcode = library.lookupFunction<_TranscodeNative, _TranscodeDart>(
+        'ec_transcode_wav_to_mp3',
+      ),
       _lastError = library.lookupFunction<_LastErrorNative, _LastErrorDart>(
         'ec_last_error',
-      );
+      ),
+      _protectSecret = library
+          .lookupFunction<_SecretTransformNative, _SecretTransformDart>(
+            'ec_protect_secret',
+          );
 
   static const String libraryName = 'echoclip_windows_ffi.dll';
 
@@ -105,6 +162,10 @@ final class WindowsReplayFfi {
   final _DestroyDart _destroy;
   final _AudioDevicesJsonDart _audioDevicesJson;
   final _ConfigureCaptureDart _configureCapture;
+  final _ConfigureSyncDart _configureSync;
+  final _ConfigureSyncDart _configureSyncProtected;
+  final _TestSyncDart _testSyncConnection;
+  final _TestSyncDart _testSyncConnectionProtected;
   final _CaptureCommandDart _startCapture;
   final _CaptureCommandDart _stopCapture;
   final _AvailableMillisDart _availableMillis;
@@ -113,7 +174,14 @@ final class WindowsReplayFfi {
   final _ClearDart _clear;
   final _StatusDart _status;
   final _StatusJsonDart _statusJson;
+  final _SchedulerConfigureDart _schedulerConfigure;
+  final _StatusJsonDart _schedulerSnapshot;
+  final _SchedulerStringCommandDart _schedulerUpsert;
+  final _SchedulerStringCommandDart _schedulerDelete;
+  final _SchedulerSetEnabledDart _schedulerSetEnabled;
+  final _TranscodeDart _transcode;
   final _LastErrorDart _lastError;
+  final _SecretTransformDart _protectSecret;
 
   factory WindowsReplayFfi.open() {
     return WindowsReplayFfi._(_openLibrary());
@@ -198,6 +266,90 @@ final class WindowsReplayFfi {
 
   int startCaptureCode(int handle) => _startCapture(handle);
 
+  int configureSyncCode(
+    int handle, {
+    required bool enabled,
+    String serverUrl = '',
+    String uploadKey = '',
+    String deviceId = '',
+  }) {
+    final server = serverUrl.toNativeUtf8(allocator: calloc);
+    final key = uploadKey.toNativeUtf8(allocator: calloc);
+    final device = deviceId.toNativeUtf8(allocator: calloc);
+    try {
+      return _configureSync(handle, enabled ? 1 : 0, server, key, device);
+    } finally {
+      calloc.free(server);
+      calloc.free(key);
+      calloc.free(device);
+    }
+  }
+
+  int configureSyncProtectedCode(
+    int handle, {
+    required bool enabled,
+    String serverUrl = '',
+    String protectedUploadKey = '',
+    String deviceId = '',
+  }) {
+    final server = serverUrl.toNativeUtf8(allocator: calloc);
+    final key = protectedUploadKey.toNativeUtf8(allocator: calloc);
+    final device = deviceId.toNativeUtf8(allocator: calloc);
+    try {
+      return _configureSyncProtected(
+        handle,
+        enabled ? 1 : 0,
+        server,
+        key,
+        device,
+      );
+    } finally {
+      calloc.free(server);
+      calloc.free(key);
+      calloc.free(device);
+    }
+  }
+
+  int testSyncConnectionCode({
+    required String serverUrl,
+    required String uploadKey,
+    required String deviceId,
+  }) => _testSyncConnectionValues(
+    serverUrl: serverUrl,
+    uploadKey: uploadKey,
+    deviceId: deviceId,
+    test: _testSyncConnection,
+  );
+
+  int testSyncConnectionProtectedCode({
+    required String serverUrl,
+    required String protectedUploadKey,
+    required String deviceId,
+  }) => _testSyncConnectionValues(
+    serverUrl: serverUrl,
+    uploadKey: protectedUploadKey,
+    deviceId: deviceId,
+    test: _testSyncConnectionProtected,
+  );
+
+  int _testSyncConnectionValues({
+    required String serverUrl,
+    required String uploadKey,
+    required String deviceId,
+    required _TestSyncDart test,
+  }) {
+    final server = serverUrl.toNativeUtf8(allocator: calloc);
+    final key = uploadKey.toNativeUtf8(allocator: calloc);
+    final device = deviceId.toNativeUtf8(allocator: calloc);
+    try {
+      return test(server, key, device);
+    } finally {
+      calloc.free(server);
+      calloc.free(key);
+      calloc.free(device);
+    }
+  }
+
   int stopCaptureCode(int handle) => _stopCapture(handle);
 
   int availableMillis(int handle) => _availableMillis(handle);
@@ -249,6 +401,44 @@ final class WindowsReplayFfi {
 
   int statusCode(int handle) => _status(handle);
 
+  String protectSecret(String secret) => _transformSecret(
+    operation: 'ec_protect_secret',
+    input: secret,
+    transform: _protectSecret,
+  );
+
+  String _transformSecret({
+    required String operation,
+    required String input,
+    required _SecretTransformDart transform,
+  }) {
+    final inputUtf8 = input.toNativeUtf8(allocator: calloc);
+    try {
+      var capacity = transform(inputUtf8, nullptr, 0);
+      for (var attempt = 0; attempt < 3; attempt += 1) {
+        if (capacity <= 1) {
+          break;
+        }
+        final buffer = calloc<Uint8>(capacity);
+        try {
+          final required = transform(inputUtf8, buffer, capacity);
+          if (required > capacity) {
+            capacity = required;
+            continue;
+          }
+          if (required > 1) {
+            return buffer.cast<Utf8>().toDartString();
+          }
+        } finally {
+          calloc.free(buffer);
+        }
+      }
+      throw WindowsReplayFfiException(operation, coreError, lastError(0));
+    } finally {
+      calloc.free(inputUtf8);
+    }
+  }
+
   Map<String, Object?> statusJson(int handle) {
     var capacity = _statusJson(handle, nullptr, 0);
     for (var attempt = 0; attempt < 4; attempt += 1) {
@@ -281,6 +471,107 @@ final class WindowsReplayFfi {
       coreError,
       lastError(handle),
     );
+  }
+
+  int configureSchedulerRuntimeCode(
+    int handle, {
+    String recordingDirectory = '',
+    String ffmpegPath = '',
+  }) {
+    final recording = recordingDirectory.toNativeUtf8(allocator: calloc);
+    final ffmpeg = ffmpegPath.toNativeUtf8(allocator: calloc);
+    try {
+      return _schedulerConfigure(handle, recording, ffmpeg);
+    } finally {
+      calloc.free(recording);
+      calloc.free(ffmpeg);
+    }
+  }
+
+  Map<String, Object?> schedulerSnapshotJson(int handle) {
+    var capacity = _schedulerSnapshot(handle, nullptr, 0);
+    for (var attempt = 0; attempt < 4; attempt += 1) {
+      if (capacity <= 1) {
+        break;
+      }
+      final buffer = calloc<Uint8>(capacity);
+      try {
+        final required = _schedulerSnapshot(handle, buffer, capacity);
+        if (required <= 1) {
+          break;
+        }
+        if (required > capacity) {
+          capacity = required;
+          continue;
+        }
+        final decoded = jsonDecode(buffer.cast<Utf8>().toDartString());
+        return decoded is Map
+            ? Map<String, Object?>.from(decoded)
+            : const <String, Object?>{};
+      } finally {
+        calloc.free(buffer);
+      }
+    }
+    throw WindowsReplayFfiException(
+      'ec_scheduler_snapshot_json',
+      coreError,
+      lastError(handle),
+    );
+  }
+
+  int schedulerUpsertCode(int handle, Map<String, Object?> task) {
+    final json = jsonEncode(task).toNativeUtf8(allocator: calloc);
+    try {
+      return _schedulerUpsert(handle, json);
+    } finally {
+      calloc.free(json);
+    }
+  }
+
+  int schedulerDeleteCode(int handle, String taskId) {
+    final id = taskId.toNativeUtf8(allocator: calloc);
+    try {
+      return _schedulerDelete(handle, id);
+    } finally {
+      calloc.free(id);
+    }
+  }
+
+  int schedulerSetEnabledCode(
+    int handle,
+    String taskId,
+    int expectedRevision,
+    bool enabled,
+  ) {
+    final id = taskId.toNativeUtf8(allocator: calloc);
+    try {
+      return _schedulerSetEnabled(
+        handle,
+        id,
+        expectedRevision,
+        enabled ? 1 : 0,
+      );
+    } finally {
+      calloc.free(id);
+    }
+  }
+
+  int transcodeWavToMp3Code({
+    required String inputPath,
+    required String outputPath,
+    required String ffmpegPath,
+    required int bitrateKbps,
+  }) {
+    final input = inputPath.toNativeUtf8(allocator: calloc);
+    final output = outputPath.toNativeUtf8(allocator: calloc);
+    final ffmpeg = ffmpegPath.toNativeUtf8(allocator: calloc);
+    try {
+      return _transcode(input, output, ffmpeg, bitrateKbps);
+    } finally {
+      calloc.free(input);
+      calloc.free(output);
+      calloc.free(ffmpeg);
+    }
   }
 
   String? lastError(int handle) {

@@ -2,6 +2,8 @@ package com.echoclip.echoclip
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
+import java.util.UUID
 
 data class AudioSettings(
     val sampleRate: Int,
@@ -33,6 +35,39 @@ data class RecordingModeSettings(
     )
 }
 
+data class SyncSettings(
+    val enabled: Boolean,
+    val serverHost: String,
+    val uploadPort: Int,
+    val deviceId: String,
+    val keyConfigured: Boolean,
+) {
+    val serverUrl: String
+        get() {
+            if (!isValidSyncHost(serverHost) || uploadPort !in 1..65_535) return ""
+            val authority = if (serverHost.contains(':')) "[$serverHost]" else serverHost
+            return "http://$authority:$uploadPort"
+        }
+
+    fun toMap(): Map<String, Any> = mapOf(
+        "enabled" to enabled,
+        "serverHost" to serverHost,
+        "uploadPort" to uploadPort,
+        "serverUrl" to serverUrl,
+        "deviceId" to deviceId,
+        "keyConfigured" to keyConfigured,
+    )
+}
+
+private fun isValidSyncHost(value: String): Boolean {
+    val host = value.trim()
+    return host.isNotEmpty() &&
+        !host.contains("://") &&
+        !host.any(Char::isWhitespace) &&
+        !host.contains('/') &&
+        !host.contains('?') &&
+        !host.contains('#')
+}
 object RecordingStorage {
     private const val PREFS_NAME = "echoclip_recording_storage"
     private const val KEY_FOLDER_URI = "folder_uri"
@@ -45,6 +80,12 @@ object RecordingStorage {
     private const val KEY_LOCK_RECORDING_TRIGGER = "lock_recording_trigger"
     private const val KEY_LAST_SESSION_STARTED_UNIX_MILLIS = "last_session_started_unix_millis"
     private const val KEY_LAST_AVAILABLE_MILLIS = "last_available_millis"
+    private const val KEY_SYNC_ENABLED = "sync_enabled"
+    private const val KEY_SYNC_SERVER_URL = "sync_server_url"
+    private const val KEY_SYNC_SERVER_HOST = "sync_server_host"
+    private const val KEY_SYNC_UPLOAD_PORT = "sync_upload_port"
+    private const val KEY_SYNC_DEVICE_ID = "sync_device_id"
+    private const val KEY_SYNC_BUFFER_SECONDS = "sync_buffer_seconds"
     private const val DEFAULT_SAMPLE_RATE = 16_000
     private const val DEFAULT_BUFFER_SECONDS = 1_800
     private const val DEFAULT_EXPORT_FORMAT = "mp3"
@@ -202,6 +243,74 @@ object RecordingStorage {
             .putLong(KEY_LAST_AVAILABLE_MILLIS, value.coerceAtLeast(0L))
             .apply()
     }
+
+    fun getSyncSettings(context: Context): SyncSettings {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        var deviceId = prefs.getString(KEY_SYNC_DEVICE_ID, null).orEmpty()
+        if (deviceId.isBlank()) {
+            deviceId = UUID.randomUUID().toString()
+            prefs.edit().putString(KEY_SYNC_DEVICE_ID, deviceId).commit()
+        }
+        var serverHost = prefs.getString(KEY_SYNC_SERVER_HOST, "").orEmpty().trim()
+        var uploadPort = prefs.getInt(KEY_SYNC_UPLOAD_PORT, 32_581)
+        val legacyUrl = prefs.getString(KEY_SYNC_SERVER_URL, "").orEmpty().trim()
+        if (serverHost.isBlank() && legacyUrl.isNotBlank()) {
+            val legacyUri = Uri.parse(legacyUrl)
+            serverHost = legacyUri.host.orEmpty()
+            uploadPort = if (legacyUri.port in 1..65_535) legacyUri.port else 32_581
+        }
+        if (uploadPort !in 1..65_535) uploadPort = 32_581
+        if (legacyUrl.isNotBlank() || !prefs.contains(KEY_SYNC_SERVER_HOST)) {
+            prefs.edit()
+                .putString(KEY_SYNC_SERVER_HOST, serverHost)
+                .putInt(KEY_SYNC_UPLOAD_PORT, uploadPort)
+                .remove(KEY_SYNC_SERVER_URL)
+                .remove(KEY_SYNC_BUFFER_SECONDS)
+                .commit()
+        }
+        val keyConfigured = UploadKeyStorage.load(context)?.isNotBlank() == true
+        return SyncSettings(
+            enabled = prefs.getBoolean(KEY_SYNC_ENABLED, false) &&
+                isValidSyncHost(serverHost) && keyConfigured,
+            serverHost = serverHost,
+            uploadPort = uploadPort,
+            deviceId = deviceId,
+            keyConfigured = keyConfigured,
+        )
+    }
+
+    fun setSyncSettings(
+        context: Context,
+        enabled: Boolean,
+        serverHost: String,
+        uploadPort: Int,
+        uploadKeyBase64: String?,
+        clearKey: Boolean,
+    ): SyncSettings {
+        if (clearKey) {
+            UploadKeyStorage.clear(context)
+        } else if (!uploadKeyBase64.isNullOrBlank()) {
+            val decoded = Base64.decode(uploadKeyBase64.trim(), Base64.DEFAULT)
+            require(decoded.size == 32) { "upload key must decode to 32 bytes" }
+            decoded.fill(0)
+            UploadKeyStorage.store(context, uploadKeyBase64)
+        }
+        val normalizedHost = serverHost.trim().removeSurrounding("[", "]")
+        require(uploadPort in 1..65_535) { "upload port must be between 1 and 65535" }
+        if (enabled) require(isValidSyncHost(normalizedHost)) { "invalid server host" }
+        val keyConfigured = UploadKeyStorage.load(context)?.isNotBlank() == true
+        val appliedEnabled = enabled && isValidSyncHost(normalizedHost) && keyConfigured
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SYNC_ENABLED, appliedEnabled)
+            .putString(KEY_SYNC_SERVER_HOST, normalizedHost)
+            .putInt(KEY_SYNC_UPLOAD_PORT, uploadPort)
+            .remove(KEY_SYNC_SERVER_URL)
+            .remove(KEY_SYNC_BUFFER_SECONDS)
+            .commit()
+        return getSyncSettings(context)
+    }
+    fun getSyncUploadKey(context: Context): String? = UploadKeyStorage.load(context)
 
     private fun sanitizeSampleRate(value: Int): Int {
         return if (value in SAMPLE_RATE_OPTIONS) value else DEFAULT_SAMPLE_RATE

@@ -134,12 +134,6 @@ abstract class AppLocalizations {
   /// **'Recordings'**
   String get navLibrary;
 
-  /// No description provided for @navProcessing.
-  ///
-  /// In en, this message translates to:
-  /// **'Processing'**
-  String get navProcessing;
-
   /// No description provided for @navSettings.
   ///
   /// In en, this message translates to:
@@ -181,6 +175,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Last recording {time}'**
   String lastRecordingStartedAt(Object time);
+
+  /// No description provided for @lastRecordingTimeUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'No previous recording time'**
+  String get lastRecordingTimeUnavailable;
 
   /// No description provided for @recordingStatusNormal.
   ///
@@ -356,6 +356,18 @@ abstract class AppLocalizations {
   /// **'Last {duration}'**
   String recentDurationName(Object duration);
 
+  /// No description provided for @loudnessRecordingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording'**
+  String get loudnessRecordingLabel;
+
+  /// No description provided for @loudnessHistoryLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Last 6 seconds'**
+  String get loudnessHistoryLabel;
+
   /// No description provided for @loudnessTitle.
   ///
   /// In en, this message translates to:
@@ -385,6 +397,114 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Peak'**
   String get peakLabel;
+
+  /// No description provided for @saveRecentLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Save recent audio'**
+  String get saveRecentLabel;
+
+  /// No description provided for @chooseSaveDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose duration'**
+  String get chooseSaveDuration;
+
+  /// No description provided for @libraryCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 recording} other{{count} recordings}}'**
+  String libraryCount(int count);
+
+  /// No description provided for @librarySelected.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} selected'**
+  String librarySelected(int count);
+
+  /// No description provided for @allRecordings.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get allRecordings;
+
+  /// No description provided for @searchRecordings.
+  ///
+  /// In en, this message translates to:
+  /// **'Search recordings'**
+  String get searchRecordings;
+
+  /// No description provided for @clearSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear search'**
+  String get clearSearch;
+
+  /// No description provided for @sortRecordings.
+  ///
+  /// In en, this message translates to:
+  /// **'Sort recordings'**
+  String get sortRecordings;
+
+  /// No description provided for @libraryNewest.
+  ///
+  /// In en, this message translates to:
+  /// **'Newest first'**
+  String get libraryNewest;
+
+  /// No description provided for @libraryOldest.
+  ///
+  /// In en, this message translates to:
+  /// **'Oldest first'**
+  String get libraryOldest;
+
+  /// No description provided for @libraryNameOrder.
+  ///
+  /// In en, this message translates to:
+  /// **'File name'**
+  String get libraryNameOrder;
+
+  /// No description provided for @librarySize.
+  ///
+  /// In en, this message translates to:
+  /// **'Size'**
+  String get librarySize;
+
+  /// No description provided for @librarySavedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved at'**
+  String get librarySavedAt;
+
+  /// No description provided for @libraryNoMatches.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching recordings'**
+  String get libraryNoMatches;
+
+  /// No description provided for @librarySearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Try another name or choose a different group.'**
+  String get librarySearchHint;
+
+  /// No description provided for @libraryEmptyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Save a clip from Home to see it here.'**
+  String get libraryEmptyHint;
+
+  /// No description provided for @audioFileLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get audioFileLabel;
+
+  /// No description provided for @playbackSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Playback speed'**
+  String get playbackSpeed;
 
   /// No description provided for @libraryTitle.
   ///
@@ -560,24 +680,6 @@ abstract class AppLocalizations {
   /// **'Stop'**
   String get stop;
 
-  /// No description provided for @processingTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Audio processing'**
-  String get processingTitle;
-
-  /// No description provided for @sourceRecording.
-  ///
-  /// In en, this message translates to:
-  /// **'Source recording'**
-  String get sourceRecording;
-
-  /// No description provided for @gainDb.
-  ///
-  /// In en, this message translates to:
-  /// **'Gain {gain} dB'**
-  String gainDb(Object gain);
-
   /// No description provided for @outputFormat.
   ///
   /// In en, this message translates to:
@@ -590,35 +692,257 @@ abstract class AppLocalizations {
   /// **'MP3 bitrate'**
   String get mp3Bitrate;
 
-  /// No description provided for @processing.
+  /// No description provided for @settingsOverview.
   ///
   /// In en, this message translates to:
-  /// **'Processing'**
-  String get processing;
+  /// **'Recording, storage and preferences'**
+  String get settingsOverview;
 
-  /// No description provided for @generateProcessedCopy.
+  /// No description provided for @internalStorage.
   ///
   /// In en, this message translates to:
-  /// **'Generate processed copy'**
-  String get generateProcessedCopy;
+  /// **'Internal storage'**
+  String get internalStorage;
 
-  /// No description provided for @processingComplete.
+  /// No description provided for @scheduleTaskCount.
   ///
   /// In en, this message translates to:
-  /// **'Processing complete. A new recording file was created.'**
-  String get processingComplete;
+  /// **'{count, plural, =1{1 task} other{{count} tasks}}'**
+  String scheduleTaskCount(int count);
 
-  /// No description provided for @processingFailed.
+  /// No description provided for @scheduleEmptyHint.
   ///
   /// In en, this message translates to:
-  /// **'Processing failed. Check FFmpeg or the source file.'**
-  String get processingFailed;
+  /// **'Create a task or start from a saved preset.'**
+  String get scheduleEmptyHint;
 
   /// No description provided for @settingsTitle.
   ///
   /// In en, this message translates to:
   /// **'Settings'**
   String get settingsTitle;
+
+  /// No description provided for @serverSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Server settings'**
+  String get serverSettings;
+
+  /// No description provided for @serverSettingsDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Configure encrypted real-time upload and review connection history'**
+  String get serverSettingsDescription;
+
+  /// No description provided for @serverConnectionDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Server connection'**
+  String get serverConnectionDetails;
+
+  /// No description provided for @serverNotConfigured.
+  ///
+  /// In en, this message translates to:
+  /// **'Not configured'**
+  String get serverNotConfigured;
+
+  /// No description provided for @serverSyncDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync disabled'**
+  String get serverSyncDisabled;
+
+  /// No description provided for @serverConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get serverConnected;
+
+  /// No description provided for @serverConnectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection failed'**
+  String get serverConnectionFailed;
+
+  /// No description provided for @serverConnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting'**
+  String get serverConnecting;
+
+  /// No description provided for @serverSyncEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload while recording'**
+  String get serverSyncEnabled;
+
+  /// No description provided for @serverSyncEnabledDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload only PCM recorded after this switch is enabled; network retries never read older cache'**
+  String get serverSyncEnabledDescription;
+
+  /// No description provided for @serverHost.
+  ///
+  /// In en, this message translates to:
+  /// **'IP address or domain'**
+  String get serverHost;
+
+  /// No description provided for @serverUploadPort.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload port'**
+  String get serverUploadPort;
+
+  /// No description provided for @serverUploadKey.
+  ///
+  /// In en, this message translates to:
+  /// **'Unique upload key'**
+  String get serverUploadKey;
+
+  /// No description provided for @serverUploadKeyConfigured.
+  ///
+  /// In en, this message translates to:
+  /// **'A protected key is already configured. Leave blank to keep it.'**
+  String get serverUploadKeyConfigured;
+
+  /// No description provided for @serverUploadKeyRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the 32-byte Base64 key generated by the server'**
+  String get serverUploadKeyRequired;
+
+  /// No description provided for @serverUploadKeyInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'The upload key must be a valid Base64 encoding of exactly 32 bytes'**
+  String get serverUploadKeyInvalid;
+
+  /// No description provided for @serverDeviceId.
+  ///
+  /// In en, this message translates to:
+  /// **'Client device ID'**
+  String get serverDeviceId;
+
+  /// No description provided for @saveSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Save settings'**
+  String get saveSettings;
+
+  /// No description provided for @serverTestConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Test connection'**
+  String get serverTestConnection;
+
+  /// No description provided for @serverTestingConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Testing connection…'**
+  String get serverTestingConnection;
+
+  /// No description provided for @serverConnectionTestSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Server connection succeeded'**
+  String get serverConnectionTestSucceeded;
+
+  /// No description provided for @serverConnectionTestFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Server connection failed'**
+  String get serverConnectionTestFailed;
+
+  /// No description provided for @removeServerKey.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove key'**
+  String get removeServerKey;
+
+  /// No description provided for @serverConnectionStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection status'**
+  String get serverConnectionStatus;
+
+  /// No description provided for @serverConnectionLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection logs and disconnect history'**
+  String get serverConnectionLogs;
+
+  /// No description provided for @noServerConnectionLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'No connection events recorded in this app session'**
+  String get noServerConnectionLogs;
+
+  /// No description provided for @serverHostInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an IP address or domain without http:// or a path'**
+  String get serverHostInvalid;
+
+  /// No description provided for @serverUploadPortInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an upload port from 1 to 65535'**
+  String get serverUploadPortInvalid;
+
+  /// No description provided for @serverUploadLag.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending upload: {samples} samples'**
+  String serverUploadLag(int samples);
+
+  /// No description provided for @serverReconnectCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnects: {count}'**
+  String serverReconnectCount(int count);
+
+  /// No description provided for @serverKeyId.
+  ///
+  /// In en, this message translates to:
+  /// **'Key ID: {keyId}'**
+  String serverKeyId(Object keyId);
+
+  /// No description provided for @serverEventStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync started'**
+  String get serverEventStarted;
+
+  /// No description provided for @serverEventConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get serverEventConnected;
+
+  /// No description provided for @serverEventDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnected'**
+  String get serverEventDisconnected;
+
+  /// No description provided for @serverEventRetentionGap.
+  ///
+  /// In en, this message translates to:
+  /// **'Local retention gap'**
+  String get serverEventRetentionGap;
+
+  /// No description provided for @serverEventStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync stopped'**
+  String get serverEventStopped;
+
+  /// No description provided for @close.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get close;
 
   /// No description provided for @recordingFolder.
   ///
@@ -863,7 +1187,7 @@ abstract class AppLocalizations {
   /// No description provided for @clearCacheSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Clear temporary export and processing cache; the active replay cache is preserved while recording'**
+  /// **'Clear temporary export cache; the active replay cache is preserved while recording'**
   String get clearCacheSubtitle;
 
   /// No description provided for @confirmClearCache.
@@ -1070,18 +1394,6 @@ abstract class AppLocalizations {
   /// **'Deleted {count} recordings, error: {error}'**
   String deletedRecordingsWithError(int count, Object error);
 
-  /// No description provided for @processedRecording.
-  ///
-  /// In en, this message translates to:
-  /// **'Processed recording: {name}'**
-  String processedRecording(Object name);
-
-  /// No description provided for @processingStatusError.
-  ///
-  /// In en, this message translates to:
-  /// **'Processing error: {error}'**
-  String processingStatusError(Object error);
-
   /// No description provided for @cacheClearedStatus.
   ///
   /// In en, this message translates to:
@@ -1111,6 +1423,438 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Unnamed group'**
   String get unnamedGroup;
+
+  /// No description provided for @navScheduledTasks.
+  ///
+  /// In en, this message translates to:
+  /// **'Scheduled tasks'**
+  String get navScheduledTasks;
+
+  /// No description provided for @scheduledTasksTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Scheduled tasks'**
+  String get scheduledTasksTitle;
+
+  /// No description provided for @newScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'New task'**
+  String get newScheduledTask;
+
+  /// No description provided for @scheduleOperationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Scheduled task operation failed: {error}'**
+  String scheduleOperationFailed(Object error);
+
+  /// No description provided for @loadingScheduledTasks.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading scheduled tasks…'**
+  String get loadingScheduledTasks;
+
+  /// No description provided for @noScheduledTasks.
+  ///
+  /// In en, this message translates to:
+  /// **'No scheduled tasks'**
+  String get noScheduledTasks;
+
+  /// No description provided for @requestExactAlarm.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow exact alarms'**
+  String get requestExactAlarm;
+
+  /// No description provided for @noUpcomingTask.
+  ///
+  /// In en, this message translates to:
+  /// **'No task is waiting to run'**
+  String get noUpcomingTask;
+
+  /// No description provided for @nextScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Next run: {time} ({remaining} remaining)'**
+  String nextScheduledTask(Object remaining, Object time);
+
+  /// No description provided for @scheduleDue.
+  ///
+  /// In en, this message translates to:
+  /// **'Scheduled {time} ({remaining} remaining)'**
+  String scheduleDue(Object remaining, Object time);
+
+  /// No description provided for @scheduleHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution history'**
+  String get scheduleHistory;
+
+  /// No description provided for @noScheduleHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'No execution history'**
+  String get noScheduleHistory;
+
+  /// No description provided for @schedulePlannedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Planned {time}'**
+  String schedulePlannedAt(Object time);
+
+  /// No description provided for @scheduleStartedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Started {time}'**
+  String scheduleStartedAt(Object time);
+
+  /// No description provided for @scheduleLateBy.
+  ///
+  /// In en, this message translates to:
+  /// **'Late by {duration}'**
+  String scheduleLateBy(Object duration);
+
+  /// No description provided for @deleteScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete scheduled task'**
+  String get deleteScheduledTask;
+
+  /// No description provided for @confirmDeleteScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete “{name}”? Existing execution history is kept.'**
+  String confirmDeleteScheduledTask(Object name);
+
+  /// No description provided for @editScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit scheduled task'**
+  String get editScheduledTask;
+
+  /// No description provided for @scheduleName.
+  ///
+  /// In en, this message translates to:
+  /// **'Task name'**
+  String get scheduleName;
+
+  /// No description provided for @scheduleTaskSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Task settings'**
+  String get scheduleTaskSettings;
+
+  /// No description provided for @scheduleRunTime.
+  ///
+  /// In en, this message translates to:
+  /// **'Run time'**
+  String get scheduleRunTime;
+
+  /// No description provided for @scheduleActionsAtRun.
+  ///
+  /// In en, this message translates to:
+  /// **'Actions when the task runs'**
+  String get scheduleActionsAtRun;
+
+  /// No description provided for @scheduleHours.
+  ///
+  /// In en, this message translates to:
+  /// **'Hours'**
+  String get scheduleHours;
+
+  /// No description provided for @scheduleMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Minutes'**
+  String get scheduleMinutes;
+
+  /// No description provided for @scheduleSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Seconds'**
+  String get scheduleSeconds;
+
+  /// No description provided for @scheduleChooseDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Date: {date}'**
+  String scheduleChooseDate(Object date);
+
+  /// No description provided for @scheduleCountdown.
+  ///
+  /// In en, this message translates to:
+  /// **'Countdown'**
+  String get scheduleCountdown;
+
+  /// No description provided for @scheduleTimePoint.
+  ///
+  /// In en, this message translates to:
+  /// **'Time point'**
+  String get scheduleTimePoint;
+
+  /// No description provided for @scheduleRecordingAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording action'**
+  String get scheduleRecordingAction;
+
+  /// No description provided for @scheduleNoChange.
+  ///
+  /// In en, this message translates to:
+  /// **'No change'**
+  String get scheduleNoChange;
+
+  /// No description provided for @scheduleStartRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Start recording'**
+  String get scheduleStartRecording;
+
+  /// No description provided for @scheduleStopRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop recording'**
+  String get scheduleStopRecording;
+
+  /// No description provided for @scheduleUploadAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Live upload'**
+  String get scheduleUploadAction;
+
+  /// No description provided for @scheduleEnableUpload.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable upload'**
+  String get scheduleEnableUpload;
+
+  /// No description provided for @scheduleDisableUpload.
+  ///
+  /// In en, this message translates to:
+  /// **'Disable upload'**
+  String get scheduleDisableUpload;
+
+  /// No description provided for @scheduleSaveRecent.
+  ///
+  /// In en, this message translates to:
+  /// **'Save recent audio'**
+  String get scheduleSaveRecent;
+
+  /// No description provided for @scheduleSaveSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Save duration (seconds)'**
+  String get scheduleSaveSeconds;
+
+  /// No description provided for @scheduleAllowPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Save available audio when the buffer is shorter'**
+  String get scheduleAllowPartial;
+
+  /// No description provided for @scheduleEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable task after saving'**
+  String get scheduleEnabled;
+
+  /// No description provided for @saveScheduledTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Save task'**
+  String get saveScheduledTask;
+
+  /// No description provided for @scheduleSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save the task. Check the input and platform state.'**
+  String get scheduleSaveFailed;
+
+  /// No description provided for @scheduleNameRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a task name.'**
+  String get scheduleNameRequired;
+
+  /// No description provided for @scheduleActionRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Select at least one action.'**
+  String get scheduleActionRequired;
+
+  /// No description provided for @scheduleCountdownRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'The countdown must be greater than 0 seconds.'**
+  String get scheduleCountdownRequired;
+
+  /// No description provided for @scheduleTimePointPast.
+  ///
+  /// In en, this message translates to:
+  /// **'The selected time must be in the future.'**
+  String get scheduleTimePointPast;
+
+  /// No description provided for @scheduleSaveDurationInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Save duration must be between 1 and 86400 seconds.'**
+  String get scheduleSaveDurationInvalid;
+
+  /// No description provided for @scheduleCountdownWithDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Countdown {duration}'**
+  String scheduleCountdownWithDuration(Object duration);
+
+  /// No description provided for @scheduleSaveActionSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Save recent {seconds} s · {format}'**
+  String scheduleSaveActionSummary(Object format, Object seconds);
+
+  /// No description provided for @convertWavToMp3.
+  ///
+  /// In en, this message translates to:
+  /// **'Convert to MP3'**
+  String get convertWavToMp3;
+
+  /// No description provided for @convertWavBitrate.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose MP3 bitrate'**
+  String get convertWavBitrate;
+
+  /// No description provided for @convertingWavToMp3.
+  ///
+  /// In en, this message translates to:
+  /// **'Converting WAV…'**
+  String get convertingWavToMp3;
+
+  /// No description provided for @convertedWavToMp3.
+  ///
+  /// In en, this message translates to:
+  /// **'Created MP3: {name}'**
+  String convertedWavToMp3(Object name);
+
+  /// No description provided for @convertWavToMp3Failed.
+  ///
+  /// In en, this message translates to:
+  /// **'WAV to MP3 failed: {error}'**
+  String convertWavToMp3Failed(Object error);
+
+  /// No description provided for @scheduleNameAutomatic.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave blank to generate a name'**
+  String get scheduleNameAutomatic;
+
+  /// No description provided for @scheduleTaskNamePrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Task'**
+  String get scheduleTaskNamePrefix;
+
+  /// No description provided for @schedulePresetNamePrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Preset'**
+  String get schedulePresetNamePrefix;
+
+  /// No description provided for @saveSchedulePreset.
+  ///
+  /// In en, this message translates to:
+  /// **'Save preset'**
+  String get saveSchedulePreset;
+
+  /// No description provided for @deleteSchedulePreset.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete preset'**
+  String get deleteSchedulePreset;
+
+  /// No description provided for @schedulePresetsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Task presets ({count}/9)'**
+  String schedulePresetsTitle(int count);
+
+  /// No description provided for @schedulePresetsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Save up to 9 presets in the task editor to quickly create tasks later.'**
+  String get schedulePresetsHint;
+
+  /// No description provided for @confirmDeleteSchedulePreset.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete preset “{name}”? Existing tasks will be kept.'**
+  String confirmDeleteSchedulePreset(String name);
+
+  /// No description provided for @schedulePresetLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'You can save up to 9 presets. Delete a preset first.'**
+  String get schedulePresetLimit;
+
+  /// No description provided for @saveInProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving · Cancel'**
+  String get saveInProgress;
+
+  /// No description provided for @saveCanceling.
+  ///
+  /// In en, this message translates to:
+  /// **'Canceling…'**
+  String get saveCanceling;
+
+  /// No description provided for @saveCanceled.
+  ///
+  /// In en, this message translates to:
+  /// **'Save canceled'**
+  String get saveCanceled;
+
+  /// No description provided for @saveWritingProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Writing {progress}% · Cancel'**
+  String saveWritingProgress(int progress);
+
+  /// No description provided for @shareRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Share'**
+  String get shareRecording;
+
+  /// No description provided for @shareRecordingFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to share. Check that the recording exists and folder access is allowed.'**
+  String get shareRecordingFailed;
+
+  /// No description provided for @saveFailedStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Save failed'**
+  String get saveFailedStatus;
+
+  /// No description provided for @saveCancelFailedStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel failed'**
+  String get saveCancelFailedStatus;
+
+  /// No description provided for @saveCancelingStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Canceling save'**
+  String get saveCancelingStatus;
+
+  /// No description provided for @saveWritingStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Writing audio'**
+  String get saveWritingStatus;
 }
 
 class _AppLocalizationsDelegate

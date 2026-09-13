@@ -78,6 +78,46 @@ class ReplayServiceClient {
     );
   }
 
+  Future<ServerSyncSettings> getServerSyncSettings() async {
+    return ServerSyncSettings.fromNative(await _map('getServerSyncSettings'));
+  }
+
+  Future<ServerSyncSettingsUpdate> setServerSyncEnabled(bool enabled) async {
+    return ServerSyncSettingsUpdate.fromNative(
+      await _map('setServerSyncEnabled', {'enabled': enabled}),
+    );
+  }
+
+  Future<ServerSyncSettingsUpdate> setServerSyncSettings({
+    required String serverHost,
+    required int uploadPort,
+    String? uploadKey,
+    bool clearKey = false,
+  }) async {
+    return ServerSyncSettingsUpdate.fromNative(
+      await _map('setServerSyncSettings', {
+        'serverHost': serverHost,
+        'uploadPort': uploadPort,
+        'uploadKey': uploadKey,
+        'clearKey': clearKey,
+      }),
+    );
+  }
+
+  Future<ServerConnectionTestResult> testServerConnection({
+    String? serverHost,
+    int? uploadPort,
+    String? uploadKey,
+  }) async {
+    return ServerConnectionTestResult.fromNative(
+      await _map('testServerConnection', {
+        'serverHost': serverHost,
+        'uploadPort': uploadPort,
+        'uploadKey': uploadKey,
+      }),
+    );
+  }
+
   Future<RecordingModeSettings> getRecordingModeSettings() async {
     return RecordingModeSettings.fromNative(
       await _map('getRecordingModeSettings'),
@@ -133,6 +173,22 @@ class ReplayServiceClient {
       await _map('saveReplayClip', {'seconds': seconds}),
     );
   }
+
+  Future<Map<dynamic, dynamic>> getSaveJob(int jobId) =>
+      _map('getSaveJob', {'jobId': jobId});
+
+  Future<void> cancelSaveJob(int jobId) async {
+    await _map('cancelSaveJob', {'jobId': jobId});
+  }
+
+  Future<OperationResult> shareRecording(ClipItem clip, String title) async =>
+      OperationResult.fromNative(
+        await _map('shareRecording', {
+          'uri': clip.uri,
+          'name': clip.name,
+          'title': title,
+        }),
+      );
 
   Future<List<RecordingGroup>> listGroups() async {
     final response = await _list('listGroups');
@@ -203,20 +259,54 @@ class ReplayServiceClient {
     return OperationResult.fromNative(await _map(method, arguments));
   }
 
-  Future<OperationResult> processRecording({
+  Future<OperationResult> convertWavToMp3({
     required ClipItem clip,
-    required double gainDb,
-    required String format,
-    required int mp3BitrateKbps,
+    int mp3BitrateKbps = 128,
   }) async {
     return OperationResult.fromNative(
-      await _map('processRecording', {
+      await _map('convertWavToMp3', {
         'uri': clip.uri,
         'parentUri': clip.parentUri,
-        'gainDb': gainDb,
-        'format': format,
         'mp3BitrateKbps': mp3BitrateKbps,
       }),
+    );
+  }
+
+  Future<ScheduleSnapshot> getScheduleSnapshot() async {
+    return ScheduleSnapshot.fromNative(await _map('getScheduleSnapshot'));
+  }
+
+  Future<ScheduleSnapshot> upsertScheduledTask(
+    Map<String, Object?> task,
+  ) async {
+    return ScheduleSnapshot.fromNative(
+      await _map('upsertScheduledTask', {'task': task}),
+    );
+  }
+
+  Future<ScheduleSnapshot> deleteScheduledTask(String taskId) async {
+    return ScheduleSnapshot.fromNative(
+      await _map('deleteScheduledTask', {'taskId': taskId}),
+    );
+  }
+
+  Future<ScheduleSnapshot> setScheduledTaskEnabled({
+    required String taskId,
+    required int expectedRevision,
+    required bool enabled,
+  }) async {
+    return ScheduleSnapshot.fromNative(
+      await _map('setScheduledTaskEnabled', {
+        'taskId': taskId,
+        'expectedRevision': expectedRevision,
+        'enabled': enabled,
+      }),
+    );
+  }
+
+  Future<ScheduleSnapshot> requestExactAlarmPermission() async {
+    return ScheduleSnapshot.fromNative(
+      await _map('requestExactAlarmPermission'),
     );
   }
 
@@ -263,6 +353,203 @@ class ReplayServiceClient {
     return await _channel.invokeListMethod<Object?>(method) ??
         const <Object?>[];
   }
+}
+
+class ScheduleSnapshot {
+  const ScheduleSnapshot({
+    required this.ok,
+    required this.tasks,
+    this.presets = const [],
+    required this.history,
+    required this.nextWakeup,
+    required this.schedulingPrecision,
+    required this.exactAlarmPermission,
+    required this.recordingDestinationReady,
+    required this.ffmpegAvailable,
+    required this.uploadConfigured,
+    required this.processResident,
+    this.error,
+  });
+
+  factory ScheduleSnapshot.fromNative(Map<dynamic, dynamic> value) {
+    final taskValues = value['tasks'];
+    final presetValues = value['presets'];
+    final historyValues = value['history'];
+    final nextWakeup = value['nextWakeupUtcMillis'];
+    return ScheduleSnapshot(
+      ok: value['ok'] != false && value['error'] == null,
+      tasks: taskValues is List
+          ? taskValues
+                .whereType<Map>()
+                .map(ScheduledTaskModel.fromNative)
+                .toList()
+          : const [],
+      presets: presetValues is List
+          ? presetValues
+                .whereType<Map>()
+                .map(SchedulePresetModel.fromNative)
+                .toList()
+          : const [],
+      history: historyValues is List
+          ? historyValues
+                .whereType<Map>()
+                .map(ScheduledExecutionModel.fromNative)
+                .toList()
+          : const [],
+      nextWakeup: nextWakeup is num && nextWakeup.toInt() > 0
+          ? DateTime.fromMillisecondsSinceEpoch(
+              nextWakeup.toInt(),
+              isUtc: true,
+            ).toLocal()
+          : null,
+      schedulingPrecision:
+          value['schedulingPrecision']?.toString() ?? 'unavailable',
+      exactAlarmPermission: value['exactAlarmPermission'] == true,
+      recordingDestinationReady: value['recordingDestinationReady'] == true,
+      ffmpegAvailable: value['ffmpegAvailable'] == true,
+      uploadConfigured: value['uploadConfigured'] == true,
+      processResident: value['processResident'] == true,
+      error: value['error']?.toString(),
+    );
+  }
+
+  final bool ok;
+  final List<ScheduledTaskModel> tasks;
+  final List<SchedulePresetModel> presets;
+  final List<ScheduledExecutionModel> history;
+  final DateTime? nextWakeup;
+  final String schedulingPrecision;
+  final bool exactAlarmPermission;
+  final bool recordingDestinationReady;
+  final bool ffmpegAvailable;
+  final bool uploadConfigured;
+  final bool processResident;
+  final String? error;
+}
+
+class SchedulePresetModel {
+  const SchedulePresetModel({
+    required this.id,
+    required this.name,
+    required this.enabled,
+    required this.trigger,
+    required this.actions,
+  });
+  factory SchedulePresetModel.fromNative(Map<dynamic, dynamic> value) {
+    return SchedulePresetModel(
+      id: value['id']?.toString() ?? '',
+      name: value['name']?.toString() ?? '',
+      enabled: value['enabled'] == true,
+      trigger: Map<String, Object?>.from(value['trigger'] as Map? ?? const {}),
+      actions: (value['actions'] as List? ?? const [])
+          .whereType<Map>()
+          .map((a) => Map<String, Object?>.from(a))
+          .toList(),
+    );
+  }
+  final String id;
+  final String name;
+  final bool enabled;
+  final Map<String, Object?> trigger;
+  final List<Map<String, Object?>> actions;
+}
+
+class ScheduledTaskModel {
+  const ScheduledTaskModel({
+    required this.id,
+    required this.revision,
+    required this.name,
+    required this.enabled,
+    required this.state,
+    required this.trigger,
+    required this.actions,
+    required this.nextDue,
+  });
+
+  factory ScheduledTaskModel.fromNative(Map<dynamic, dynamic> value) {
+    final triggerValue = value['trigger'];
+    final actionValues = value['actions'];
+    final nextDue = value['nextDueUtcMillis'];
+    return ScheduledTaskModel(
+      id: value['id']?.toString() ?? '',
+      revision: value['revision'] is num
+          ? (value['revision'] as num).toInt()
+          : 0,
+      name: value['name']?.toString() ?? '',
+      enabled: value['enabled'] == true,
+      state: value['state']?.toString() ?? 'disabled',
+      trigger: triggerValue is Map
+          ? Map<String, Object?>.from(triggerValue)
+          : const {},
+      actions: actionValues is List
+          ? actionValues
+                .whereType<Map>()
+                .map((action) => Map<String, Object?>.from(action))
+                .toList()
+          : const [],
+      nextDue: nextDue is num && nextDue.toInt() > 0
+          ? DateTime.fromMillisecondsSinceEpoch(
+              nextDue.toInt(),
+              isUtc: true,
+            ).toLocal()
+          : null,
+    );
+  }
+
+  final String id;
+  final int revision;
+  final String name;
+  final bool enabled;
+  final String state;
+  final Map<String, Object?> trigger;
+  final List<Map<String, Object?>> actions;
+  final DateTime? nextDue;
+}
+
+class ScheduledExecutionModel {
+  const ScheduledExecutionModel({
+    required this.executionId,
+    required this.taskName,
+    required this.result,
+    required this.scheduledFor,
+    required this.startedAt,
+    required this.lateByMillis,
+    required this.actionResults,
+  });
+
+  factory ScheduledExecutionModel.fromNative(Map<dynamic, dynamic> value) {
+    DateTime? parseTime(Object? raw) => raw is num
+        ? DateTime.fromMillisecondsSinceEpoch(
+            raw.toInt(),
+            isUtc: true,
+          ).toLocal()
+        : null;
+    final actionValues = value['actionResults'];
+    return ScheduledExecutionModel(
+      executionId: value['executionId']?.toString() ?? '',
+      taskName: value['taskName']?.toString() ?? '',
+      result: value['result']?.toString() ?? 'failed',
+      scheduledFor: parseTime(value['scheduledForUtcMillis']),
+      startedAt: parseTime(value['startedAtUtcMillis']),
+      lateByMillis: value['lateByMillis'] is num
+          ? (value['lateByMillis'] as num).toInt()
+          : 0,
+      actionResults: actionValues is List
+          ? actionValues
+                .whereType<Map>()
+                .map((item) => Map<String, Object?>.from(item))
+                .toList()
+          : const [],
+    );
+  }
+
+  final String executionId;
+  final String taskName;
+  final String result;
+  final DateTime? scheduledFor;
+  final DateTime? startedAt;
+  final int lateByMillis;
+  final List<Map<String, Object?>> actionResults;
 }
 
 class AudioSettings {
@@ -396,6 +683,208 @@ class AudioSourceSettingsUpdate extends AudioSourceSettings {
   final bool applied;
 }
 
+class ServerConnectionLog {
+  const ServerConnectionLog({
+    required this.unixSeconds,
+    required this.event,
+    required this.message,
+  });
+
+  factory ServerConnectionLog.fromNative(Map<dynamic, dynamic> value) {
+    final time = value['unixSeconds'] ?? value['unix_seconds'];
+    return ServerConnectionLog(
+      unixSeconds: time is num ? time.toInt() : 0,
+      event: value['event']?.toString() ?? 'unknown',
+      message: value['message']?.toString() ?? '',
+    );
+  }
+
+  final int unixSeconds;
+  final String event;
+  final String message;
+}
+
+class ServerConnectionTestResult {
+  const ServerConnectionTestResult({
+    required this.success,
+    required this.testedAtUnixSeconds,
+    required this.serverUrl,
+    this.error,
+  });
+
+  factory ServerConnectionTestResult.fromNative(Map<dynamic, dynamic> value) {
+    final testedAt =
+        value['testedAtUnixSeconds'] ?? value['tested_at_unix_seconds'];
+    return ServerConnectionTestResult(
+      success: value['success'] == true,
+      testedAtUnixSeconds: testedAt is num ? testedAt.toInt() : 0,
+      serverUrl: (value['serverUrl'] ?? value['server_url'])?.toString() ?? '',
+      error: value['error']?.toString(),
+    );
+  }
+
+  final bool success;
+  final int testedAtUnixSeconds;
+  final String serverUrl;
+  final String? error;
+}
+
+class ServerSyncStatus {
+  const ServerSyncStatus({
+    required this.running,
+    required this.connected,
+    required this.serverUrl,
+    required this.keyId,
+    required this.localTotalSamples,
+    required this.remoteNextSample,
+    required this.lagSamples,
+    required this.lastSuccessUnixSeconds,
+    required this.reconnectCount,
+    required this.logs,
+    this.serverStreamId,
+    this.lastError,
+  });
+
+  factory ServerSyncStatus.fromNative(Map<dynamic, dynamic> value) {
+    int integer(String camel, String snake) {
+      final raw = value[camel] ?? value[snake];
+      return raw is num ? raw.toInt() : 0;
+    }
+
+    final rawLogs = value['logs'];
+    return ServerSyncStatus(
+      running: value['running'] == true,
+      connected: value['connected'] == true,
+      serverUrl: (value['serverUrl'] ?? value['server_url'])?.toString() ?? '',
+      keyId: (value['keyId'] ?? value['key_id'])?.toString() ?? '',
+      serverStreamId: (value['serverStreamId'] ?? value['server_stream_id'])
+          ?.toString(),
+      localTotalSamples: integer('localTotalSamples', 'local_total_samples'),
+      remoteNextSample: integer('remoteNextSample', 'remote_next_sample'),
+      lagSamples: integer('lagSamples', 'lag_samples'),
+      lastSuccessUnixSeconds: integer(
+        'lastSuccessUnixSeconds',
+        'last_success_unix_seconds',
+      ),
+      reconnectCount: integer('reconnectCount', 'reconnect_count'),
+      lastError: (value['lastError'] ?? value['last_error'])?.toString(),
+      logs: rawLogs is List
+          ? rawLogs
+                .whereType<Map>()
+                .map(ServerConnectionLog.fromNative)
+                .toList(growable: false)
+          : const <ServerConnectionLog>[],
+    );
+  }
+
+  final bool running;
+  final bool connected;
+  final String serverUrl;
+  final String keyId;
+  final String? serverStreamId;
+  final int localTotalSamples;
+  final int remoteNextSample;
+  final int lagSamples;
+  final int lastSuccessUnixSeconds;
+  final int reconnectCount;
+  final String? lastError;
+  final List<ServerConnectionLog> logs;
+}
+
+class ServerSyncSettings {
+  const ServerSyncSettings({
+    required this.enabled,
+    required this.serverHost,
+    required this.uploadPort,
+    required this.deviceId,
+    required this.keyConfigured,
+    this.status,
+    this.configurationError,
+  });
+
+  factory ServerSyncSettings.fromNative(Map<dynamic, dynamic> value) {
+    final rawStatus = value['status'] ?? value['syncStatus'];
+    final legacyUrl = value['serverUrl']?.toString().trim() ?? '';
+    final legacyUri = Uri.tryParse(legacyUrl);
+    final serverHost = value['serverHost']?.toString().trim().isNotEmpty == true
+        ? value['serverHost'].toString().trim()
+        : legacyUri?.host ?? '';
+    final rawPort = value['uploadPort'];
+    final uploadPort = rawPort is num
+        ? rawPort.toInt()
+        : legacyUri?.hasPort == true
+        ? legacyUri!.port
+        : 32581;
+    return ServerSyncSettings(
+      enabled: value['enabled'] == true,
+      serverHost: serverHost,
+      uploadPort: uploadPort,
+      deviceId: value['deviceId']?.toString() ?? '',
+      keyConfigured: value['keyConfigured'] == true,
+      status: rawStatus is Map ? ServerSyncStatus.fromNative(rawStatus) : null,
+      configurationError: value['configurationError']?.toString(),
+    );
+  }
+
+  final bool enabled;
+  final String serverHost;
+  final int uploadPort;
+  final String deviceId;
+  final bool keyConfigured;
+  final ServerSyncStatus? status;
+  final String? configurationError;
+
+  bool get configured =>
+      serverHost.isNotEmpty &&
+      uploadPort >= 1 &&
+      uploadPort <= 65535 &&
+      keyConfigured;
+
+  String get serverUrl {
+    final host = serverHost.trim();
+    if (host.isEmpty || uploadPort < 1 || uploadPort > 65535) {
+      return '';
+    }
+    final unwrapped = host.startsWith('[') && host.endsWith(']')
+        ? host.substring(1, host.length - 1)
+        : host;
+    final authority = unwrapped.contains(':') ? '[$unwrapped]' : unwrapped;
+    return 'http://$authority:$uploadPort';
+  }
+
+  String get connectionLabel =>
+      serverHost.isEmpty ? '' : '$serverHost:$uploadPort';
+}
+
+class ServerSyncSettingsUpdate extends ServerSyncSettings {
+  const ServerSyncSettingsUpdate({
+    required super.enabled,
+    required super.serverHost,
+    required super.uploadPort,
+    required super.deviceId,
+    required super.keyConfigured,
+    required this.applied,
+    super.status,
+    super.configurationError,
+  });
+
+  factory ServerSyncSettingsUpdate.fromNative(Map<dynamic, dynamic> value) {
+    final settings = ServerSyncSettings.fromNative(value);
+    return ServerSyncSettingsUpdate(
+      enabled: settings.enabled,
+      serverHost: settings.serverHost,
+      uploadPort: settings.uploadPort,
+      deviceId: settings.deviceId,
+      keyConfigured: settings.keyConfigured,
+      status: settings.status,
+      configurationError: settings.configurationError,
+      applied: value['applied'] == true,
+    );
+  }
+
+  final bool applied;
+}
+
 class RecordingModeSettings {
   const RecordingModeSettings({required this.mode, required this.trigger});
 
@@ -443,6 +932,9 @@ class ReplayStatus {
     this.sampleRate,
     this.bufferSeconds,
     this.cacheBytes,
+    this.syncConfigured = false,
+    this.syncStatus,
+    this.syncConfigurationError,
   });
 
   factory ReplayStatus.fromNative(Map<dynamic, dynamic> value) {
@@ -481,6 +973,11 @@ class ReplayStatus {
       cacheBytes: value['cacheBytes'] is int
           ? value['cacheBytes'] as int
           : null,
+      syncConfigured: value['syncConfigured'] == true,
+      syncStatus: value['syncStatus'] is Map
+          ? ServerSyncStatus.fromNative(value['syncStatus'] as Map)
+          : null,
+      syncConfigurationError: value['syncConfigurationError']?.toString(),
     );
   }
 
@@ -497,6 +994,9 @@ class ReplayStatus {
   final int? sampleRate;
   final int? bufferSeconds;
   final int? cacheBytes;
+  final bool syncConfigured;
+  final ServerSyncStatus? syncStatus;
+  final String? syncConfigurationError;
 }
 
 class MeterStatus {
@@ -609,18 +1109,21 @@ class SaveClipResult {
     required this.saved,
     required this.pending,
     this.error,
+    this.jobId,
   });
 
   factory SaveClipResult.fromNative(Map<dynamic, dynamic> value) {
     return SaveClipResult(
       saved: value['saved'] == true,
       pending: value['pending'] == true,
+      jobId: (value['jobId'] as num?)?.toInt(),
       error: value['error']?.toString(),
     );
   }
 
   final bool saved;
   final bool pending;
+  final int? jobId;
   final String? error;
 }
 

@@ -7,6 +7,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$pwshExe = Join-Path $PSHOME "pwsh.exe"
+if (-not (Test-Path -LiteralPath $pwshExe)) {
+    throw "PowerShell 7 (pwsh.exe) is required."
+}
 
 function Invoke-Checked {
     param(
@@ -58,7 +62,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $ffmpegSource "configure")) -or
     -not (Test-Path -LiteralPath (Join-Path $lameSource "configure")) -or
     -not (Test-Path -LiteralPath $bash)) {
     Invoke-Checked `
-        -FilePath "powershell.exe" `
+        -FilePath $pwshExe `
         -Arguments @(
             "-ExecutionPolicy", "Bypass",
             "-File", (Join-Path $PSScriptRoot "prepare_android_ffmpeg_sources.ps1"),

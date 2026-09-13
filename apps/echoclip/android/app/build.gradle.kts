@@ -33,6 +33,11 @@ android {
         }
     }
 
+    testOptions {
+        // JVM lifecycle tests exercise service state with Android effects stubbed.
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -46,6 +51,14 @@ android {
             // FFmpeg is packaged as jniLibs/<abi>/libffmpeg.so but executed as a
             // process, so it must be extracted into applicationInfo.nativeLibraryDir.
             useLegacyPackaging = true
+            // Dependency AARs (e.g. the Dart JNI runtime) ship libdartjni.so for
+            // every ABI, which would otherwise leak armeabi-v7a/x86/x86_64 into
+            // the package. EchoClip targets arm64-v8a only, so drop the rest.
+            excludes += listOf(
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/x86_64/**"
+            )
         }
     }
 }
@@ -58,4 +71,8 @@ kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

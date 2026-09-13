@@ -207,6 +207,7 @@ Widget _settingsApp({
               microphoneDeviceId,
             }) async {},
         onRefreshAudioInputDevices: () async {},
+        onOpenServerSettings: () async {},
         onLockRecordingTriggerChanged: (_) async {},
         onClearCache: () async => const <String, Object?>{
           'ok': true,

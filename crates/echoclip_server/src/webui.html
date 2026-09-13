@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f3f7f6">
+<title>EchoClip Server</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#f3f7f6;--surface:#ffffff;--surface-2:#eaf1ef;--line:#d7e2df;
+  --text:#16201e;--muted:#66736f;--primary:#00796f;--primary-2:#d5efeb;
+  --danger:#b3261e;--danger-bg:#ffdad6;--warning:#795900;--shadow:0 12px 35px rgba(18,52,46,.08);
+  font-family:Inter,"Segoe UI","Microsoft YaHei UI",system-ui,-apple-system,sans-serif
+}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
+button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.45}
+[hidden]{display:none!important}.app{min-height:100vh;display:grid;grid-template-columns:250px 1fr}
+.sidebar{position:sticky;top:0;height:100vh;padding:24px 16px;border-right:1px solid var(--line);background:rgba(255,255,255,.72);backdrop-filter:blur(18px);display:flex;flex-direction:column;z-index:10}
+.brand{display:flex;align-items:center;gap:12px;padding:0 10px 24px}.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(145deg,#008f83,#005e57);color:#fff;display:grid;place-items:center;font-weight:800;box-shadow:0 8px 20px rgba(0,121,111,.22)}
+.brand strong{font-size:18px}.brand small{display:block;color:var(--muted);font-weight:500;margin-top:2px}
+.nav{display:grid;gap:6px}.nav button{border:0;background:transparent;color:var(--muted);padding:13px 14px;border-radius:14px;text-align:left;display:flex;align-items:center;gap:12px;font-weight:650}.nav button:hover{background:var(--surface-2);color:var(--text)}.nav button.active{background:var(--primary-2);color:#005c55}.nav-icon{font-size:19px;width:24px;text-align:center}
+.side-foot{margin-top:auto;padding:14px 10px;color:var(--muted);font-size:12px;line-height:1.55}
+.main{min-width:0;padding:30px 38px 52px}.page{max-width:1120px;margin:0 auto}.page-head{display:flex;gap:18px;align-items:flex-end;justify-content:space-between;margin-bottom:22px}.page-head h1{font-size:30px;letter-spacing:-.7px;margin:0 0 5px}.page-head p{margin:0;color:var(--muted)}
+.grid{display:grid;gap:18px}.grid.two{grid-template-columns:minmax(0,1.5fr) minmax(280px,.8fr)}.card{background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:var(--shadow)}.card h2{font-size:18px;margin:0}.card-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:750}
+.status-chip{display:inline-flex;align-items:center;gap:7px;background:var(--surface-2);color:var(--muted);border-radius:999px;padding:7px 11px;font-size:13px;font-weight:700}.status-chip.live{background:#d8f5e5;color:#126b3b}.dot{width:8px;height:8px;border-radius:50%;background:currentColor}.status-chip.realtime .dot{animation:live-pulse 1.8s ease-out infinite}@keyframes live-pulse{0%,45%{box-shadow:0 0 0 0 currentColor}80%,100%{box-shadow:0 0 0 5px transparent}}
+.hero{padding:27px}.cache-time{font-size:54px;line-height:1;font-weight:760;letter-spacing:-2px;margin:14px 0 8px;font-variant-numeric:tabular-nums}.muted{color:var(--muted)}.meta-row{display:flex;gap:10px 22px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin-top:15px}.meter{height:10px;background:var(--surface-2);border-radius:99px;overflow:hidden;margin-top:24px}.meter span{display:block;height:100%;width:0;background:linear-gradient(90deg,#00a595,#56c568,#e5a600);border-radius:inherit;will-change:width}.meter-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:7px}
+.preset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.preset{border:1px solid var(--line);background:#fff;border-radius:13px;padding:11px 8px;color:var(--text);font-weight:650}.preset:hover,.preset.active{border-color:var(--primary);background:var(--primary-2);color:#005e57}
+.primary,.secondary,.danger,.icon-btn{border:0;border-radius:13px;padding:11px 16px;font-weight:700}.primary{background:var(--primary);color:#fff;box-shadow:0 6px 15px rgba(0,121,111,.18)}.primary:hover{background:#006c63}.secondary{background:var(--surface-2);color:var(--text)}.danger{background:var(--danger-bg);color:var(--danger)}.icon-btn{padding:9px 12px;background:transparent;color:var(--muted)}.icon-btn:hover{background:var(--surface-2);color:var(--text)}.wide{width:100%}
+.field{display:grid;gap:7px;margin-top:16px}.field label{font-weight:680;font-size:13px}.field small{color:var(--muted)}input,select{width:100%;border:1px solid #afbfbb;border-radius:13px;background:#fff;color:var(--text);padding:11px 13px;outline:none}input:focus,select:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(0,121,111,.12)}.input-row{display:grid;grid-template-columns:1fr auto;gap:9px}.range-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.divider{height:1px;background:var(--line);margin:20px 0}.hint{border-radius:14px;padding:13px 14px;background:var(--surface-2);color:var(--muted);font-size:13px;line-height:1.55}.warning{background:#fff3cd;color:var(--warning);border:1px solid #edd48b}
+.toast{position:fixed;right:24px;bottom:24px;z-index:100;background:#24302e;color:#fff;padding:12px 16px;border-radius:13px;box-shadow:0 12px 35px rgba(0,0,0,.22);max-width:420px}.toast.error{background:#8c1d18}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.toolbar .search{min-width:230px;flex:1}.library-layout{display:grid;grid-template-columns:220px 1fr;gap:18px}.groups{padding:12px}.group-item{display:flex;align-items:center;gap:7px}.group-item button:first-child{flex:1;text-align:left;border:0;background:transparent;padding:10px 11px;border-radius:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}.group-item button:first-child.active{background:var(--primary-2);color:#005e57;font-weight:700}.group-more{padding:7px!important;flex:0!important}.recording-list{display:grid;gap:12px}.recording{border:1px solid var(--line);border-radius:18px;padding:16px;background:#fff}.recording-top{display:flex;align-items:flex-start;gap:12px}.recording-info{min-width:0;flex:1}.recording-name{font-weight:720;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.recording-meta{font-size:12px;color:var(--muted);margin-top:5px}.recording-actions{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}.player{display:grid;grid-template-columns:minmax(180px,1fr) 100px;gap:10px;align-items:center;margin-top:13px}.player audio{width:100%;height:36px}.select-box{width:20px;height:20px;margin:2px 0 0}.empty{text-align:center;padding:62px 20px;color:var(--muted)}.empty .symbol{font-size:40px;margin-bottom:9px}
+.batch-bar{position:sticky;bottom:14px;background:#24302e;color:#fff;padding:12px 14px;border-radius:16px;display:flex;align-items:center;gap:12px;justify-content:space-between;box-shadow:0 12px 35px rgba(0,0,0,.18);z-index:5}.batch-actions{display:flex;gap:8px}.batch-bar button{box-shadow:none}
+.settings-list{display:grid;gap:18px}.setting-row{display:grid;grid-template-columns:minmax(190px,.75fr) minmax(260px,1fr);gap:26px;align-items:start}.setting-row h3{margin:2px 0 6px;font-size:15px}.setting-row p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}.setting-control .field{margin-top:0}.about-links{display:flex;gap:10px;flex-wrap:wrap}.about-links a{text-decoration:none;color:#006e65;background:var(--primary-2);padding:9px 12px;border-radius:12px;font-weight:650;font-size:13px}
+.setup-shell{min-height:100vh;display:grid;place-items:center;padding:28px;background:radial-gradient(circle at 15% 20%,#d4eee9,transparent 35%),radial-gradient(circle at 85% 75%,#dce8f5,transparent 34%),var(--bg)}.setup-card{max-width:650px;width:100%;background:rgba(255,255,255,.88);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.75);border-radius:28px;padding:32px;box-shadow:0 25px 70px rgba(23,67,60,.15)}.setup-card h1{margin:20px 0 8px;font-size:30px}.setup-card p{color:var(--muted);line-height:1.65}.setup-icon{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;background:var(--primary-2);font-size:27px}
+.mobile-title{display:none}
+@media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{position:fixed;top:auto;bottom:0;left:0;right:0;height:auto;padding:7px max(8px,env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));border:0;border-top:1px solid var(--line)}.brand,.side-foot{display:none}.nav{grid-template-columns:repeat(3,1fr)}.nav button{justify-content:center;flex-direction:column;gap:2px;padding:7px;font-size:11px}.nav-icon{font-size:20px}.main{padding:22px 18px 100px}.grid.two{grid-template-columns:1fr}.library-layout{grid-template-columns:1fr}.groups{display:flex;overflow:auto;padding:8px}.group-item{flex:none}.group-more{display:none}.setting-row{grid-template-columns:1fr;gap:12px}.page-head h1{font-size:26px}.cache-time{font-size:46px}}
+@media(max-width:560px){.card{padding:17px;border-radius:18px}.hero{padding:20px}.preset-grid{grid-template-columns:repeat(3,1fr)}.page-head{align-items:flex-start;flex-direction:column}.player{grid-template-columns:1fr}.recording-top{flex-wrap:wrap}.recording-actions{width:100%;justify-content:flex-start}.range-row{grid-template-columns:1fr}.setup-card{padding:24px}.toolbar .search{min-width:100%}}
+</style>
+</head>
+<body>
+<section id="setup" class="setup-shell" hidden>
+  <form id="setup-form" class="setup-card">
+    <div class="setup-icon">📁</div>
+    <h1>选择录音保存目录</h1>
+    <p>EchoClip Server 已就绪。请选择服务器上的绝对路径，用于保存从滚动缓存中导出的 WAV 录音。之后仍可在设置中修改。</p>
+    <div class="field"><label for="setup-directory">服务器绝对路径</label><input id="setup-directory" autocomplete="off" spellcheck="false" required><small id="setup-suggestion"></small></div>
+    <div id="public-warning-setup" class="hint warning" hidden style="margin-top:16px">WebUI 已允许公网访问；页面 HTTP 流量不会由 EchoClip 加密。</div>
+    <button id="setup-submit" class="primary wide" type="submit" style="margin-top:20px">开始使用</button>
+  </form>
+</section>
+<div id="application" class="app" hidden>
+  <aside class="sidebar">
+    <div class="brand"><div class="logo">E</div><div><strong>EchoClip</strong><small>Server 0.6.0</small></div></div>
+    <nav class="nav">
+      <button class="active" data-page="home"><span class="nav-icon">◉</span><span data-i18n="home">录音</span></button>
+      <button data-page="library"><span class="nav-icon">♫</span><span data-i18n="library">录音库</span></button>
+      <button data-page="settings"><span class="nav-icon">⚙</span><span data-i18n="settings">设置</span></button>
+    </nav>
+
+  </aside>
+  <main class="main">
+    <section id="page-home" class="page">
+      <header class="page-head"><div><h1 data-i18n="homeTitle">实时录音</h1></div><span id="connection-chip" class="status-chip"><span class="dot"></span><span>等待上传</span></span></header>
+      <div id="public-warning" class="hint warning" hidden style="margin-bottom:18px">WebUI 已允许公网访问；页面 HTTP 流量不会由 EchoClip 加密。</div>
+      <div class="grid two">
+        <article class="card hero">
+          <div class="eyebrow">CURRENT BUFFER</div>
+          <div id="cache-time" class="cache-time">00:00:00</div>
+          <div id="cache-caption" class="muted">缓存尚无录音</div>
+          <div class="meter"><span id="level-meter"></span></div>
+          <div class="meter-labels"><span>安静</span><span id="level-text">0%</span><span>峰值</span></div>
+          <div class="meta-row"><span id="audio-format">等待客户端格式</span><span id="cache-size">0 B</span><span id="last-upload">尚未上传</span></div>
+        </article>
+        <article class="card">
+          <div class="card-head"><h2>保存最近片段</h2></div>
+          <div id="preset-grid" class="preset-grid"></div>
+          <div class="field"><label for="save-seconds">自定义时长（秒）</label><div class="input-row"><input id="save-seconds" type="number" min="1" step="1" value="30"><button id="save-latest" class="primary" type="button">保存</button></div></div>
+          <div class="divider"></div>
+          <div class="field"><label>保存自定义范围（相对现在）</label><div class="range-row"><input id="range-start" type="number" min="1" value="60" aria-label="开始于多少秒前"><input id="range-end" type="number" min="0" value="0" aria-label="结束于多少秒前"></div><small>左侧必须大于右侧，例如 60 秒前至现在。</small></div>
+          <button id="save-range" class="secondary wide" type="button" style="margin-top:12px">保存此范围</button>
+        </article>
+      </div>
+
+    </section>
+
+    <section id="page-library" class="page" hidden>
+      <header class="page-head"><div><h1 data-i18n="libraryTitle">已保存录音</h1><p>播放、整理并导出服务器上保存的录音</p></div><div class="toolbar"><button id="new-group" class="secondary">＋ 新建分组</button><button id="toggle-edit" class="secondary">选择</button><button id="refresh-library" class="icon-btn" title="刷新">↻ 刷新</button></div></header>
+      <div class="library-layout">
+        <aside class="card groups"><div id="group-list"></div></aside>
+        <div>
+          <div class="toolbar" style="margin-bottom:14px"><input id="library-search" class="search" type="search" placeholder="搜索录音"><select id="library-sort" style="width:auto"><option value="newest">最新优先</option><option value="oldest">最早优先</option><option value="name">按名称</option><option value="size">按大小</option></select></div>
+          <div id="recording-list" class="recording-list"></div>
+          <div id="batch-bar" class="batch-bar" hidden><span id="batch-count">已选择 0 项</span><div class="batch-actions"><button id="select-all" class="secondary">全选</button><button id="delete-selected" class="danger">删除</button><button id="finish-edit" class="secondary">完成</button></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-settings" class="page" hidden>
+      <header class="page-head"><div><h1 data-i18n="settingsTitle">服务器设置</h1><p>管理录音目录、缓存时长和界面偏好</p></div></header>
+      <div class="settings-list">
+        <article class="card setting-row"><div><h3>录音保存目录</h3><p>从缓存导出的 WAV 文件及录音分组保存在这里。填写服务器上的绝对路径。</p></div><form id="directory-form" class="setting-control"><div class="field"><input id="settings-directory" required><small>目录可随时更改；已有文件不会自动移动。</small></div><button id="directory-submit" class="primary" style="margin-top:11px">保存目录</button></form></article>
+        <article class="card setting-row"><div><h3>服务器缓存时长</h3><p>仅由 WebUI 管理。客户端只上传开启服务后的实时录音，不控制服务器缓存。</p></div><form id="buffer-form" class="setting-control"><div class="field"><div class="input-row"><input id="buffer-minutes" type="number" min="1" step="1"><span style="align-self:center;color:var(--muted)">分钟</span></div><small id="buffer-limit"></small></div><button id="buffer-submit" class="primary" style="margin-top:11px">应用缓存时长</button></form></article>
+        <article class="card setting-row"><div><h3>界面语言</h3><p>仅影响当前浏览器中的 WebUI。</p></div><div class="setting-control"><select id="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div></article>
+        <article class="card setting-row"><div><h3>缓存状态</h3><p>网络录音格式由首个客户端上传确定。</p></div><div class="setting-control"><div id="settings-cache" class="hint">等待缓存信息</div></div></article>
+        <article class="card setting-row"><div><h3>关于 EchoClip</h3><p>EchoClip Server 0.6.0 · 单客户端、单全局缓存架构。</p></div><div class="setting-control about-links"><a href="https://github.com/MaidT/EchoClip" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/MaidT/EchoClip/issues" target="_blank" rel="noreferrer">反馈问题</a><a href="https://github.com/MaidT/EchoClip/blob/main/LICENSE" target="_blank" rel="noreferrer">开源许可</a></div></article>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div><script>
+(function(){
+"use strict";
+var state={status:null,stream:null,groups:[],recordings:[],page:"home",group:"all",editing:false,selected:new Set(),preset:30,language:localStorage.getItem("echoclip-language")||"zh-CN",liveSource:null,liveConnected:false,liveLastEventAt:0,streamReceivedAt:0,streamReceivedWall:0,targetLevel:0,targetPeak:0,displayLevel:0,displayPeak:0,peakReceivedAt:0,lastAnimationAt:0,lastClockRender:0,animationFrame:0};
+var presets=[10,30,60,300,600,1800,3600,7200,21600,43200,86400];
+var rootGroup="__ungrouped__";
+var translations={
+  "zh-CN":{home:"录音",library:"录音库",settings:"设置",homeTitle:"实时录音",libraryTitle:"已保存录音",settingsTitle:"服务器设置"},
+  en:{home:"Recorder",library:"Library",settings:"Settings",homeTitle:"Live recorder",libraryTitle:"Saved recordings",settingsTitle:"Server settings"}
+};
+function $(selector){return document.querySelector(selector)}
+function $all(selector){return Array.prototype.slice.call(document.querySelectorAll(selector))}
+function esc(value){return String(value==null?"":value).replace(/[&<>"']/g,function(char){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]})}
+function api(url,options){
+  return fetch(url,options).then(function(response){
+    return response.text().then(function(text){
+      if(!response.ok){var message=text;try{message=JSON.parse(text).error||text}catch(ignore){}throw new Error(message||("HTTP "+response.status))}
+      return text?JSON.parse(text):null
+    })
+  })
+}
+function jsonOptions(method,body){return {method:method,headers:{"content-type":"application/json"},body:JSON.stringify(body)}}
+function toast(message,error){
+  var node=$("#toast");node.textContent=message;node.classList.toggle("error",!!error);node.hidden=false;
+  clearTimeout(toast.timer);toast.timer=setTimeout(function(){node.hidden=true},3200)
+}
+function busy(button,task){
+  if(button)button.disabled=true;
+  return Promise.resolve(task).finally(function(){if(button)button.disabled=false})
+}
+function formatDuration(seconds){
+  seconds=Math.max(0,Math.floor(Number(seconds)||0));
+  var hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),secs=seconds%60;
+  return String(hours).padStart(2,"0")+":"+String(minutes).padStart(2,"0")+":"+String(secs).padStart(2,"0")
+}
+function compactDuration(seconds){
+  seconds=Math.floor(seconds);
+  if(seconds<60)return seconds+" 秒";
+  if(seconds<3600)return Math.round(seconds/60)+" 分钟";
+  return (seconds/3600).toLocaleString(undefined,{maximumFractionDigits:1})+" 小时"
+}
+function formatBytes(bytes){
+  bytes=Number(bytes)||0;var units=["B","KiB","MiB","GiB"],index=0;
+  while(bytes>=1024&&index<units.length-1){bytes/=1024;index++}
+  return bytes.toFixed(index?2:0)+" "+units[index]
+}
+function formatTime(unix){return unix?new Date(unix*1000).toLocaleString():"—"}
+function groupSegment(group){return encodeURIComponent(group||rootGroup)}
+function recordingUrl(recording){return "/api/library/recordings/"+groupSegment(recording.group)+"/"+encodeURIComponent(recording.name)}
+function recordingKey(recording){return (recording.group||rootGroup)+"\u0000"+recording.name}
+function findRecording(key){return state.recordings.find(function(item){return recordingKey(item)===key})}
+function applyLanguage(){
+  document.documentElement.lang=state.language;
+  var dict=translations[state.language]||translations["zh-CN"];
+  $all("[data-i18n]").forEach(function(node){if(dict[node.dataset.i18n])node.textContent=dict[node.dataset.i18n]});
+  $("#language").value=state.language
+}
+function showPage(page){
+  state.page=page;
+  $all(".nav button").forEach(function(button){button.classList.toggle("active",button.dataset.page===page)});
+  ["home","library","settings"].forEach(function(name){$("#page-"+name).hidden=name!==page});
+  if(page==="library")refreshLibrary(false);
+  if(page==="home")renderHome();
+  if(page==="settings")renderSettings()
+}
+function renderPresets(){
+  $("#preset-grid").innerHTML=presets.map(function(seconds){
+    return '<button class="preset'+(seconds===state.preset?' active':'')+'" data-seconds="'+seconds+'" type="button">'+compactDuration(seconds)+'</button>'
+  }).join("")
+}
+function markStreamSnapshot(stream){
+  state.stream=stream||null;
+  state.streamReceivedAt=performance.now();state.streamReceivedWall=Date.now();
+  state.targetLevel=state.stream?Math.max(0,Math.min(1,Number(state.stream.level)||0)):0;
+  state.targetPeak=state.stream?Math.max(0,Math.min(1,Number(state.stream.peak_level)||0)):0;
+  state.peakReceivedAt=state.streamReceivedAt
+}
+function currentAvailableSeconds(now){
+  var stream=state.stream;if(!stream)return 0;
+  var available=Math.max(0,Number(stream.available_seconds)||0);
+  var recentEvent=state.liveConnected&&Date.now()-state.liveLastEventAt<5000;
+  if(stream.connected&&recentEvent)available+=Math.max(0,now-state.streamReceivedAt)/1000;
+  return Math.min(Math.max(0,Number(stream.buffer_seconds)||0),available)
+}
+function renderConnectionChip(){
+  var connected=!!(state.stream&&state.stream.connected),chip=$("#connection-chip");
+  chip.classList.toggle("live",connected);chip.classList.toggle("realtime",state.liveConnected);
+  chip.lastElementChild.textContent=connected?(state.liveConnected?"正在实时接收客户端录音":"正在接收 · 状态重连中"):(state.liveConnected?"等待客户端上传":"状态连接中");
+  chip.title=state.liveConnected?"实时状态已通过 SSE 连接":"实时状态暂不可用，已启用轮询回退"
+}
+function renderHome(){
+  var stream=state.stream;
+  renderConnectionChip();renderLiveFrame(performance.now(),true);
+  $("#audio-format").textContent=stream?(stream.sample_rate+" Hz · "+stream.channels+" 声道"):"等待客户端格式";
+  $("#cache-size").textContent=stream?formatBytes(stream.cache_bytes):"0 B";
+  $("#last-upload").textContent=stream&&stream.last_upload_unix_seconds?("最后上传 "+formatTime(stream.last_upload_unix_seconds)):"尚未上传";
+  if(state.status)$("#public-warning").hidden=!state.status.webuiPublic
+}
+function renderLiveFrame(now,force){
+  var stream=state.stream,available=currentAvailableSeconds(now);
+  if(force||now-state.lastClockRender>=100){
+    $("#cache-time").textContent=formatDuration(available);
+    $("#cache-caption").textContent=stream?"已保留 "+compactDuration(available)+" / 上限 "+compactDuration(stream.buffer_seconds):"缓存尚无录音";
+    $("#save-latest").disabled=!stream||available<=0;$("#save-range").disabled=!stream||available<=0;
+    state.lastClockRender=now
+  }
+  var signalFresh=!!(stream&&stream.connected&&Date.now()-state.streamReceivedWall<2600);
+  var levelTarget=signalFresh?state.targetLevel:0;
+  var peakTarget=signalFresh&&(now-state.peakReceivedAt<360)?state.targetPeak:levelTarget;
+  var frameScale=state.lastAnimationAt?Math.min(4,Math.max(.2,(now-state.lastAnimationAt)/16.667)):1;
+  var levelRate=levelTarget>state.displayLevel ? .42 : .11;
+  var peakRate=peakTarget>state.displayPeak ? .58 : .065;
+  state.displayLevel+=(levelTarget-state.displayLevel)*(1-Math.pow(1-levelRate,frameScale));
+  state.displayPeak+=(peakTarget-state.displayPeak)*(1-Math.pow(1-peakRate,frameScale));
+  if(state.displayLevel<.001)state.displayLevel=0;if(state.displayPeak<.001)state.displayPeak=0;
+  var meter=Math.max(state.displayLevel,state.displayPeak*.72);
+  $("#level-meter").style.width=(Math.max(0,Math.min(1,meter))*100).toFixed(1)+"%";
+  $("#level-text").textContent=Math.round(Math.max(0,Math.min(1,state.displayPeak))*100)+"%";
+  state.lastAnimationAt=now
+}
+function animateLive(now){renderLiveFrame(now,false);state.animationFrame=requestAnimationFrame(animateLive)}
+function renderSettings(){
+  if(!state.status)return;
+  if(document.activeElement!==$("#settings-directory"))$("#settings-directory").value=state.status.recordingDirectory||"";
+  if(document.activeElement!==$("#buffer-minutes"))$("#buffer-minutes").value=state.status.bufferMinutes;
+  $("#buffer-minutes").max=Math.floor(state.status.maximumBufferSeconds/60);
+  $("#buffer-limit").textContent="范围：1–"+Math.floor(state.status.maximumBufferSeconds/60)+" 分钟";
+  var s=state.stream;
+  $("#settings-cache").innerHTML=s?[
+    "<strong>全局缓存正常</strong>",
+    esc(s.sample_rate+" Hz · "+s.channels+" 声道"),
+    esc("已保留 "+compactDuration(currentAvailableSeconds(performance.now()))+" · "+formatBytes(s.cache_bytes)),
+    esc("缓存 ID "+s.server_stream_id)
+  ].join("<br>"):"尚未收到客户端上传，首次录音将创建全局缓存。"
+}
+function renderGroups(){
+  var counts={all:state.recordings.length};counts[rootGroup]=state.recordings.filter(function(item){return !item.group}).length;
+  state.groups.forEach(function(group){counts[group.name]=state.recordings.filter(function(item){return item.group===group.name}).length});
+  var html='<div class="group-item"><button data-group="all" class="'+(state.group==="all"?"active":"")+'">全部录音 ('+counts.all+')</button></div>';
+  html+='<div class="group-item"><button data-group="'+rootGroup+'" class="'+(state.group===rootGroup?"active":"")+'">未分组 ('+counts[rootGroup]+')</button></div>';
+  state.groups.forEach(function(group){
+    var encoded=encodeURIComponent(group.name);
+    html+='<div class="group-item"><button data-group-name="'+encoded+'" data-group="'+encoded+'" class="'+(state.group===group.name?"active":"")+'" title="'+esc(group.name)+'">📁 '+esc(group.name)+' ('+(counts[group.name]||0)+')</button><button class="icon-btn group-more" data-action="group-menu" data-group-name="'+encoded+'" title="分组操作">⋯</button></div>'
+  });
+  $("#group-list").innerHTML=html
+}
+function visibleRecordings(){
+  var query=$("#library-search").value.trim().toLowerCase();
+  var list=state.recordings.filter(function(item){
+    var inGroup=state.group==="all"||(state.group===rootGroup?!item.group:item.group===state.group);
+    return inGroup&&(!query||item.name.toLowerCase().includes(query))
+  });
+  var sort=$("#library-sort").value;
+  return list.sort(function(a,b){
+    if(sort==="oldest")return a.modified_unix_seconds-b.modified_unix_seconds;
+    if(sort==="name")return a.name.localeCompare(b.name);
+    if(sort==="size")return b.bytes-a.bytes;
+    return b.modified_unix_seconds-a.modified_unix_seconds
+  })
+}
+function renderLibrary(){
+  renderGroups();
+  var list=visibleRecordings(),container=$("#recording-list");
+  if(!list.length){container.innerHTML='<div class="card empty"><div class="symbol">♫</div><div>这里还没有录音</div><small>在录音页从全局缓存保存片段后，会显示在这里。</small></div>'}
+  else{
+    container.innerHTML=list.map(function(recording){
+      var key=encodeURIComponent(recordingKey(recording)),url=recordingUrl(recording),selected=state.selected.has(recordingKey(recording));
+      return '<article class="recording" data-key="'+key+'"><div class="recording-top">'+
+        (state.editing?'<input class="select-box" type="checkbox" data-action="select-recording" data-key="'+key+'" '+(selected?"checked":"")+'>':'')+
+        '<div class="recording-info"><div class="recording-name" title="'+esc(recording.name)+'">'+esc(recording.name)+'</div><div class="recording-meta">'+(recording.group?"📁 "+esc(recording.group)+" · ":"")+formatBytes(recording.bytes)+" · "+formatTime(recording.modified_unix_seconds)+'</div></div>'+
+        (state.editing?"":'<div class="recording-actions"><a class="icon-btn" href="'+url+'" download="'+esc(recording.name)+'" title="下载">↓</a><button class="icon-btn" data-action="rename-recording" data-key="'+key+'">重命名</button><button class="icon-btn" data-action="move-recording" data-key="'+key+'">移动</button><button class="icon-btn" data-action="delete-recording" data-key="'+key+'">删除</button></div>')+
+        '</div>'+(state.editing?"":'<div class="player"><audio controls preload="metadata" src="'+url+'"></audio><select data-action="playback-speed" aria-label="播放速度"><option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select></div>')+
+      '</article>'
+    }).join("")
+  }
+  $("#batch-bar").hidden=!state.editing;
+  $("#batch-count").textContent="已选择 "+state.selected.size+" 项";
+  $("#delete-selected").disabled=!state.selected.size;
+  $("#toggle-edit").textContent=state.editing?"完成":"选择"
+}
+function refreshLibrary(showMessage){
+  return Promise.all([api("/api/library/groups"),api("/api/library/recordings")]).then(function(values){
+    state.groups=values[0];state.recordings=values[1];
+    state.selected.forEach(function(key){if(!findRecording(key))state.selected.delete(key)});
+    renderLibrary();if(showMessage)toast("录音库已刷新")
+  }).catch(function(error){toast(error.message,true)})
+}
+function refreshStatus(silent){
+  return api("/api/status").then(function(status){
+    state.status=status;
+    $("#public-warning-setup").hidden=!status.webuiPublic;
+    if(!status.recordingDirectoryConfigured){
+      $("#setup").hidden=false;$("#application").hidden=true;
+      if(!$("#setup-directory").value)$("#setup-directory").value=status.suggestedRecordingDirectory||"";
+      $("#setup-suggestion").textContent="建议目录："+(status.suggestedRecordingDirectory||"");
+      return
+    }
+    $("#setup").hidden=true;$("#application").hidden=false;
+    return api("/api/streams").then(function(streams){
+      markStreamSnapshot(streams[0]||null);renderHome();renderSettings()
+    })
+  }).catch(function(error){if(!silent)toast(error.message,true)})
+}
+function fullRefresh(){
+  return refreshStatus(false).then(function(){if(state.status&&state.status.recordingDirectoryConfigured)return refreshLibrary(false)})
+}
+function connectLiveEvents(){
+  if(!window.EventSource)return;
+  if(state.liveSource)state.liveSource.close();
+  var source=new EventSource("/api/events");state.liveSource=source;
+  source.onopen=function(){if(state.liveSource!==source)return;state.liveConnected=true;renderConnectionChip()};
+  source.addEventListener("live",function(event){
+    if(state.liveSource!==source)return;
+    try{
+      var snapshot=JSON.parse(event.data);state.liveConnected=true;state.liveLastEventAt=Date.now();
+      markStreamSnapshot(snapshot.stream||null);renderHome();if(state.page==="settings")renderSettings()
+    }catch(error){console.warn("EchoClip live event could not be read",error)}
+  });
+  source.onerror=function(){
+    if(state.liveSource!==source)return;state.liveConnected=false;renderConnectionChip();
+    if(source.readyState===EventSource.CLOSED){state.liveSource=null;setTimeout(connectLiveEvents,2000)}
+  }
+}
+function pollLiveFallback(){
+  if(!window.EventSource||!state.liveConnected)refreshStatus(true)
+}
+function saveLatest(){
+  var seconds=Math.floor(Number($("#save-seconds").value)),stream=state.stream;
+  if(!stream||!Number.isFinite(seconds)||seconds<=0){toast("请输入有效的保存时长",true);return}
+  return busy($("#save-latest"),api("/api/streams/"+encodeURIComponent(stream.server_stream_id)+"/save",jsonOptions("POST",{seconds:seconds}))).then(function(recording){
+    toast("已保存 "+recording.name);return refreshLibrary(false)
+  }).catch(function(error){toast(error.message,true)})
+}
+function saveRange(){
+  var start=Math.floor(Number($("#range-start").value)),end=Math.floor(Number($("#range-end").value)),stream=state.stream;
+  if(!stream||!Number.isFinite(start)||!Number.isFinite(end)||start<=end||end<0){toast("范围无效：开始秒数必须大于结束秒数",true);return}
+  return busy($("#save-range"),api("/api/streams/"+encodeURIComponent(stream.server_stream_id)+"/save_range",jsonOptions("POST",{start_seconds_ago:start,end_seconds_ago:end}))).then(function(recording){
+    toast("已保存 "+recording.name);return refreshLibrary(false)
+  }).catch(function(error){toast(error.message,true)})
+}
+function promptGroupAction(group){
+  var action=prompt("分组操作：输入 1 重命名，输入 2 删除\n"+group,"1");
+  if(action==="1"){
+    var name=prompt("新的分组名称",group);if(!name||name===group)return;
+    api("/api/library/groups/"+encodeURIComponent(group),jsonOptions("PATCH",{name:name})).then(function(){if(state.group===group)state.group=name;toast("分组已重命名");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+  }else if(action==="2"&&confirm("删除分组“"+group+"”及其中所有录音？此操作无法撤销。")){
+    api("/api/library/groups/"+encodeURIComponent(group),{method:"DELETE"}).then(function(){state.group="all";toast("分组已删除");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+  }
+}
+function renameRecording(recording){
+  var stem=recording.name.toLowerCase().endsWith(".wav")?recording.name.slice(0,-4):recording.name;
+  var name=prompt("新的录音名称",stem);if(!name)return;
+  if(!name.toLowerCase().endsWith(".wav"))name+=".wav";
+  api(recordingUrl(recording),jsonOptions("PATCH",{name:name})).then(function(){toast("录音已重命名");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+}
+function moveRecording(recording){
+  var choices=["0：未分组"].concat(state.groups.map(function(group,index){return (index+1)+"："+group.name}));
+  var initial=recording.group?String(state.groups.findIndex(function(group){return group.name===recording.group})+1):"0";
+  var selected=prompt("移动到分组（输入编号）\n"+choices.join("\n"),initial);if(selected==null)return;
+  var index=Number(selected),group=index===0?null:(state.groups[index-1]&&state.groups[index-1].name);
+  if(!Number.isInteger(index)||index<0||(index>0&&!group)){toast("分组编号无效",true);return}
+  api(recordingUrl(recording)+"/move",jsonOptions("POST",{group:group})).then(function(){toast("录音已移动");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+}
+function deleteRecording(recording){
+  if(!confirm("确定删除“"+recording.name+"”？"))return;
+  api(recordingUrl(recording),{method:"DELETE"}).then(function(){state.selected.delete(recordingKey(recording));toast("录音已删除");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+}function setEditing(enabled){
+  state.editing=enabled;if(!enabled)state.selected.clear();renderLibrary()
+}
+$("#setup-form").addEventListener("submit",function(event){
+  event.preventDefault();var button=$("#setup-submit"),path=$("#setup-directory").value;
+  busy(button,api("/api/setup/recording-directory",jsonOptions("POST",{path:path}))).then(function(){toast("录音目录已设置");return fullRefresh()}).catch(function(error){toast(error.message,true)})
+});
+$all(".nav button").forEach(function(button){button.addEventListener("click",function(){showPage(button.dataset.page)})});
+$("#preset-grid").addEventListener("click",function(event){
+  var button=event.target.closest("[data-seconds]");if(!button)return;
+  state.preset=Number(button.dataset.seconds);$("#save-seconds").value=state.preset;renderPresets()
+});
+$("#save-latest").addEventListener("click",saveLatest);
+$("#save-range").addEventListener("click",saveRange);
+$("#new-group").addEventListener("click",function(){
+  var name=prompt("新分组名称");if(!name)return;
+  api("/api/library/groups",jsonOptions("POST",{name:name})).then(function(){toast("分组已创建");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+});
+$("#toggle-edit").addEventListener("click",function(){setEditing(!state.editing)});
+$("#finish-edit").addEventListener("click",function(){setEditing(false)});
+$("#refresh-library").addEventListener("click",function(){refreshLibrary(true)});
+$("#library-search").addEventListener("input",renderLibrary);
+$("#library-sort").addEventListener("change",renderLibrary);
+$("#group-list").addEventListener("click",function(event){
+  var action=event.target.closest("[data-action='group-menu']");
+  if(action){promptGroupAction(decodeURIComponent(action.dataset.groupName));return}
+  var button=event.target.closest("[data-group]");if(!button)return;
+  state.group=button.dataset.group==="all"?"all":button.dataset.group===rootGroup?rootGroup:decodeURIComponent(button.dataset.group);
+  renderLibrary()
+});
+$("#recording-list").addEventListener("click",function(event){
+  var target=event.target.closest("[data-action]");if(!target)return;
+  var action=target.dataset.action;if(action==="playback-speed")return;
+  if(action==="select-recording"){
+    var selectKey=decodeURIComponent(target.dataset.key);
+    if(target.checked)state.selected.add(selectKey);else state.selected.delete(selectKey);
+    renderLibrary();return
+  }
+  var key=decodeURIComponent(target.dataset.key||""),recording=findRecording(key);if(!recording)return;
+  if(action==="rename-recording")renameRecording(recording);
+  if(action==="move-recording")moveRecording(recording);
+  if(action==="delete-recording")deleteRecording(recording)
+});
+$("#recording-list").addEventListener("change",function(event){
+  if(event.target.dataset.action!=="playback-speed")return;
+  var audio=event.target.closest(".player").querySelector("audio");audio.playbackRate=Number(event.target.value)
+});
+$("#select-all").addEventListener("click",function(){
+  var visible=visibleRecordings(),allSelected=visible.length&&visible.every(function(item){return state.selected.has(recordingKey(item))});
+  visible.forEach(function(item){var key=recordingKey(item);if(allSelected)state.selected.delete(key);else state.selected.add(key)});
+  renderLibrary()
+});
+$("#delete-selected").addEventListener("click",function(){
+  var selected=Array.from(state.selected).map(findRecording).filter(Boolean);if(!selected.length)return;
+  if(!confirm("确定删除已选择的 "+selected.length+" 个录音？此操作无法撤销。"))return;
+  busy($("#delete-selected"),Promise.all(selected.map(function(item){return api(recordingUrl(item),{method:"DELETE"})}))).then(function(){state.selected.clear();state.editing=false;toast("已删除 "+selected.length+" 个录音");refreshLibrary(false)}).catch(function(error){toast(error.message,true)})
+});
+$("#directory-form").addEventListener("submit",function(event){
+  event.preventDefault();var button=$("#directory-submit");
+  busy(button,api("/api/setup/recording-directory",jsonOptions("POST",{path:$("#settings-directory").value}))).then(function(){toast("录音目录已更新");return refreshStatus()}).catch(function(error){toast(error.message,true)})
+});
+$("#buffer-form").addEventListener("submit",function(event){
+  event.preventDefault();var minutes=Math.floor(Number($("#buffer-minutes").value)),button=$("#buffer-submit");
+  if(!Number.isFinite(minutes)||minutes<1){toast("请输入有效的整数分钟数",true);return}
+  busy(button,api("/api/settings",jsonOptions("PUT",{bufferSeconds:minutes*60}))).then(function(){toast("缓存时长已更新");return refreshStatus()}).catch(function(error){toast(error.message,true)})
+});
+$("#language").addEventListener("change",function(){
+  state.language=this.value;localStorage.setItem("echoclip-language",state.language);applyLanguage();toast(state.language==="en"?"Language updated":"界面语言已更新")
+});
+renderPresets();applyLanguage();
+state.animationFrame=requestAnimationFrame(animateLive);
+fullRefresh().then(connectLiveEvents);
+setInterval(pollLiveFallback,2000);
+document.addEventListener("visibilitychange",function(){
+  if(!document.hidden){if(!state.liveSource)connectLiveEvents();if(!state.liveConnected)refreshStatus(true)}
+});
+window.addEventListener("beforeunload",function(){if(state.liveSource)state.liveSource.close()})
+})();
+</script>
+</body>
+</html>

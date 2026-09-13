@@ -9,6 +9,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$pwshExe = Join-Path $PSHOME "pwsh.exe"
+if (-not (Test-Path -LiteralPath $pwshExe)) {
+    throw "PowerShell 7 (pwsh.exe) is required."
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $thirdPartyRoot = Join-Path $repoRoot "third_party\ffmpeg"
@@ -24,6 +28,54 @@ if ([string]::IsNullOrWhiteSpace($NdkRoot)) {
 }
 if ($Jobs -le 0) {
     $Jobs = [Math]::Max(1, [Environment]::ProcessorCount)
+}
+
+# If the default NDK is not present, fall back to any installed NDK under
+# ANDROID_HOME / ANDROID_SDK_ROOT / LOCALAPPDATA instead of failing immediately.
+if (-not (Test-Path (Join-Path $NdkRoot "toolchains\llvm"))) {
+    $ndkCandidates = @()
+    if ($env:ANDROID_NDK_HOME) { $ndkCandidates += $env:ANDROID_NDK_HOME }
+    if ($env:ANDROID_NDK_ROOT) { $ndkCandidates += $env:ANDROID_NDK_ROOT }
+    if ($env:ANDROID_HOME) { $ndkCandidates += Join-Path $env:ANDROID_HOME "ndk" }
+    if ($env:ANDROID_SDK_ROOT) { $ndkCandidates += Join-Path $env:ANDROID_SDK_ROOT "ndk" }
+    if ($env:LOCALAPPDATA) { $ndkCandidates += Join-Path $env:LOCALAPPDATA "Android\sdk\ndk" }
+
+    $NdkRoot = $null
+    foreach ($candidate in $ndkCandidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+        if (Test-Path -LiteralPath (Join-Path $candidate "toolchains\llvm")) {
+            $NdkRoot = $candidate
+            break
+        }
+        $versions = Get-ChildItem -LiteralPath $candidate -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+                Test-Path -LiteralPath (Join-Path $_.FullName "toolchains\llvm")
+            } |
+            Sort-Object Name -Descending
+        if ($versions) {
+            $NdkRoot = $versions[0].FullName
+            break
+        }
+    }
+}
+if (-not $NdkRoot -or -not (Test-Path (Join-Path $NdkRoot "toolchains\llvm"))) {
+    throw "Android NDK was not found. Pass -NdkRoot or set ANDROID_NDK_HOME / ANDROID_HOME."
+}
+
+# Release builds should be able to bootstrap FFmpeg sources and portable MSYS2
+# when they are not present yet (same behavior as the Windows FFmpeg script).
+$repoMsysBash = Join-Path $repoRoot "tools\msys64\usr\bin\bash.exe"
+if (-not (Test-Path (Join-Path $FfmpegSource "configure")) -or
+    -not (Test-Path (Join-Path $LameSource "configure")) -or
+    -not (Test-Path $repoMsysBash)) {
+    Write-Host "Preparing Android FFmpeg sources and portable MSYS2..."
+    & $pwshExe -NoProfile `
+        -File (Join-Path $PSScriptRoot "prepare_android_ffmpeg_sources.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "prepare_android_ffmpeg_sources.ps1 failed with exit code $LASTEXITCODE"
+    }
 }
 
 $bashCandidates = @(

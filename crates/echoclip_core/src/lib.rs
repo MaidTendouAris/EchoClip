@@ -12,6 +12,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod scheduler;
+
 pub const DEFAULT_SEGMENT_SECONDS: u32 = 60;
 pub const DEFAULT_MAX_REPLAY_SECONDS: u32 = 24 * 60 * 60;
 pub const DEFAULT_QUEUE_CAPACITY_CHUNKS: usize = 32;
@@ -238,13 +240,26 @@ pub enum EchoCoreError {
     Io(io::Error),
     Serde(serde_json::Error),
     InvalidConfig(&'static str),
-    ExportTooLargeForWav { bytes: u64 },
+    ExportTooLargeForWav {
+        bytes: u64,
+    },
     FfmpegUnavailable(String),
     FfmpegFailed(String),
     ExportCanceled,
     EmptyRange,
+    RangeUnavailable {
+        requested_start: u64,
+        requested_end: u64,
+        retained_start: u64,
+        retained_end: u64,
+    },
+    RangeTooLarge {
+        samples: u64,
+    },
     QueueClosed,
-    QueueFull { dropped_chunks: u64 },
+    QueueFull {
+        dropped_chunks: u64,
+    },
     WorkerStopped,
     Worker(String),
     JobNotFound(u64),
@@ -263,6 +278,21 @@ impl std::fmt::Display for EchoCoreError {
             Self::FfmpegFailed(message) => write!(formatter, "ffmpeg failed: {message}"),
             Self::ExportCanceled => write!(formatter, "export canceled"),
             Self::EmptyRange => write!(formatter, "export range is empty"),
+            Self::RangeUnavailable {
+                requested_start,
+                requested_end,
+                retained_start,
+                retained_end,
+            } => write!(
+                formatter,
+                "sample range {requested_start}..{requested_end} is outside retained range {retained_start}..{retained_end}"
+            ),
+            Self::RangeTooLarge { samples } => {
+                write!(
+                    formatter,
+                    "sample range is too large for this platform: {samples}"
+                )
+            }
             Self::QueueClosed => write!(formatter, "recorder worker queue is closed"),
             Self::QueueFull { dropped_chunks } => {
                 write!(
@@ -534,6 +564,19 @@ impl SegmentedRecorder {
 
     pub fn manifest(&self) -> &RecorderManifest {
         &self.manifest
+    }
+
+    pub fn set_max_replay_seconds(&mut self, seconds: u32) -> Result<(), EchoCoreError> {
+        if seconds == 0 {
+            return Err(EchoCoreError::InvalidConfig(
+                "max_replay_seconds must be non-zero",
+            ));
+        }
+        self.config.max_replay_seconds = seconds;
+        self.manifest.max_replay_seconds = seconds;
+        self.mark_manifest_dirty();
+        self.trim_expired_segments()?;
+        self.persist_manifest_now()
     }
 
     pub fn session_dir(&self) -> &Path {
@@ -859,6 +902,69 @@ impl RecorderSnapshot {
         samples_to_millis(self.available_samples(), self.audio)
     }
 
+    /// Reads an exact retained PCM sample range without adding a container.
+    ///
+    /// Sample positions count interleaved `i16` samples (not frames), matching
+    /// `RecorderManifest::total_samples_written`. The exact-range contract is
+    /// intentional: sync callers must detect retention gaps instead of silently
+    /// uploading a truncated range.
+    pub fn read_range_i16(
+        &self,
+        start_sample: u64,
+        end_sample: u64,
+    ) -> Result<Vec<i16>, EchoCoreError> {
+        if end_sample <= start_sample {
+            return Err(EchoCoreError::EmptyRange);
+        }
+        if start_sample < self.retained_start_sample || end_sample > self.total_samples_written {
+            return Err(EchoCoreError::RangeUnavailable {
+                requested_start: start_sample,
+                requested_end: end_sample,
+                retained_start: self.retained_start_sample,
+                retained_end: self.total_samples_written,
+            });
+        }
+
+        let sample_count = end_sample - start_sample;
+        let capacity = usize::try_from(sample_count).map_err(|_| EchoCoreError::RangeTooLarge {
+            samples: sample_count,
+        })?;
+        let mut output = Vec::with_capacity(capacity);
+        for segment in self.segments.iter().filter(|segment| {
+            segment.start_sample < end_sample && segment.end_sample() > start_sample
+        }) {
+            let copy_start = start_sample.max(segment.start_sample);
+            let copy_end = end_sample.min(segment.end_sample());
+            let local_start = copy_start - segment.start_sample;
+            let local_count = copy_end - copy_start;
+            let byte_count = usize::try_from(local_count.saturating_mul(2)).map_err(|_| {
+                EchoCoreError::RangeTooLarge {
+                    samples: sample_count,
+                }
+            })?;
+            let mut input = BufReader::new(File::open(self.session_dir.join(&segment.file_name))?);
+            input.seek(SeekFrom::Start(local_start.saturating_mul(2)))?;
+            let mut bytes = vec![0_u8; byte_count];
+            input.read_exact(&mut bytes)?;
+            output.extend(
+                bytes
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+            );
+        }
+
+        if output.len() != capacity {
+            return Err(EchoCoreError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "sample range returned {} samples, expected {capacity}",
+                    output.len()
+                ),
+            )));
+        }
+        Ok(output)
+    }
+
     pub fn save_latest_wav(
         &self,
         seconds: u32,
@@ -1147,9 +1253,33 @@ pub struct RecorderWorkerStatus {
     pub last_error: Option<String>,
 }
 
+/// A durable sample interval committed by the recorder worker.
+///
+/// Subscribers use this as a wake-up hint. Since subscriber queues are
+/// deliberately bounded, consumers must use [`RecorderSyncHandle::sample_bounds`]
+/// and [`RecorderSyncHandle::read_range_i16`] as the source of truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcmCommitted {
+    pub session_id: String,
+    pub audio: AudioConfig,
+    pub start_sample: u64,
+    pub end_sample: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecorderSampleBounds {
+    pub session_id: String,
+    pub audio: AudioConfig,
+    pub retained_start_sample: u64,
+    pub total_samples_written: u64,
+}
+
 #[derive(Debug, Clone)]
 struct SharedWorkerStatus {
     running: bool,
+    session_id: String,
+    sample_rate: u32,
+    channels: u16,
     available_millis: u64,
     oldest_retained_millis: u64,
     latest_sample_millis: u64,
@@ -1169,9 +1299,12 @@ struct SharedWorkerStatus {
 }
 
 impl SharedWorkerStatus {
-    fn new(queue_capacity_chunks: usize) -> Self {
+    fn new(queue_capacity_chunks: usize, session_id: String, audio: AudioConfig) -> Self {
         Self {
             running: true,
+            session_id,
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
             available_millis: 0,
             oldest_retained_millis: 0,
             latest_sample_millis: 0,
@@ -1225,7 +1358,64 @@ enum RecorderCommand {
     },
     Trim,
     Flush(mpsc::Sender<Result<(), String>>),
+    ReadRange {
+        start_sample: u64,
+        end_sample: u64,
+        reply: mpsc::Sender<Result<Vec<i16>, String>>,
+    },
     Stop,
+}
+
+/// Cloneable, read-only access to a running recorder worker for sync clients.
+///
+/// It intentionally exposes neither capture control nor export mutation, so a
+/// network uploader cannot alter the local recording lifecycle.
+#[derive(Clone)]
+pub struct RecorderSyncHandle {
+    sender: SyncSender<RecorderCommand>,
+    status: Arc<Mutex<SharedWorkerStatus>>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl RecorderSyncHandle {
+    pub fn sample_bounds(&self) -> Result<RecorderSampleBounds, EchoCoreError> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Err(EchoCoreError::WorkerStopped);
+        }
+        let status = self.status.lock().expect("status lock");
+        Ok(RecorderSampleBounds {
+            session_id: status.session_id.clone(),
+            audio: AudioConfig {
+                sample_rate: status.sample_rate,
+                channels: status.channels,
+            },
+            retained_start_sample: status.retained_start_sample,
+            total_samples_written: status.total_samples_written,
+        })
+    }
+
+    pub fn read_range_i16(
+        &self,
+        start_sample: u64,
+        end_sample: u64,
+    ) -> Result<Vec<i16>, EchoCoreError> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Err(EchoCoreError::WorkerStopped);
+        }
+        let (reply, receiver) = mpsc::channel();
+        self.sender
+            .send(RecorderCommand::ReadRange {
+                start_sample,
+                end_sample,
+                reply,
+            })
+            .map_err(|_| EchoCoreError::QueueClosed)?;
+        match receiver.recv() {
+            Ok(Ok(samples)) => Ok(samples),
+            Ok(Err(error)) => Err(EchoCoreError::Worker(error)),
+            Err(_) => Err(EchoCoreError::QueueClosed),
+        }
+    }
 }
 
 pub struct RecorderWorker {
@@ -1237,6 +1427,7 @@ pub struct RecorderWorker {
     next_job_id: AtomicU64,
     queued_chunks: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
+    commit_subscribers: Arc<Mutex<Vec<SyncSender<PcmCommitted>>>>,
 }
 
 impl RecorderWorker {
@@ -1252,6 +1443,8 @@ impl RecorderWorker {
         let (sender, receiver) = mpsc::sync_channel(queue_capacity_chunks.max(1));
         let status = Arc::new(Mutex::new(SharedWorkerStatus::new(
             queue_capacity_chunks.max(1),
+            recorder.manifest.session_id.clone(),
+            recorder.config.audio,
         )));
         let export_jobs = Arc::new(Mutex::new(Vec::new()));
         let cancel_flags = Arc::new(Mutex::new(HashMap::new()));
@@ -1259,6 +1452,7 @@ impl RecorderWorker {
         let pinned_segments = Arc::new(Mutex::new(HashMap::new()));
         let queued_chunks = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
+        let commit_subscribers = Arc::new(Mutex::new(Vec::new()));
 
         update_worker_status(
             &status,
@@ -1275,6 +1469,7 @@ impl RecorderWorker {
         let thread_pinned_segments = Arc::clone(&pinned_segments);
         let thread_queued_chunks = Arc::clone(&queued_chunks);
         let thread_stopped = Arc::clone(&stopped);
+        let thread_commit_subscribers = Arc::clone(&commit_subscribers);
         let command_sender = sender.clone();
         let thread = thread::spawn(move || {
             recorder_worker_loop(
@@ -1288,6 +1483,7 @@ impl RecorderWorker {
                 thread_pinned_segments,
                 thread_queued_chunks,
                 thread_stopped,
+                thread_commit_subscribers,
             );
         });
 
@@ -1300,6 +1496,7 @@ impl RecorderWorker {
             next_job_id: AtomicU64::new(1),
             queued_chunks,
             stopped,
+            commit_subscribers,
         })
     }
 
@@ -1403,6 +1600,25 @@ impl RecorderWorker {
         }
     }
 
+    /// Subscribes to durable PCM commit notifications using a bounded queue.
+    /// A slow subscriber may miss notifications but never blocks recording.
+    pub fn subscribe_commits(&self, capacity: usize) -> Receiver<PcmCommitted> {
+        let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
+        self.commit_subscribers
+            .lock()
+            .expect("commit subscriber lock")
+            .push(sender);
+        receiver
+    }
+
+    pub fn sync_handle(&self) -> RecorderSyncHandle {
+        RecorderSyncHandle {
+            sender: self.sender.clone(),
+            status: Arc::clone(&self.status),
+            stopped: Arc::clone(&self.stopped),
+        }
+    }
+
     pub fn status(&self) -> RecorderWorkerStatus {
         prune_export_jobs(&self.export_jobs);
         let export_jobs = self.export_jobs.lock().expect("export job lock").clone();
@@ -1441,6 +1657,9 @@ impl Drop for RecorderWorker {
     }
 }
 
+// Keep the worker's owned channels and shared status handles explicit: this is
+// the single boundary where their lifetimes move into the background thread.
+#[allow(clippy::too_many_arguments)]
 fn recorder_worker_loop(
     mut recorder: SegmentedRecorder,
     receiver: Receiver<RecorderCommand>,
@@ -1452,15 +1671,31 @@ fn recorder_worker_loop(
     pinned_segments: Arc<Mutex<HashMap<String, usize>>>,
     queued_chunks: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
+    commit_subscribers: Arc<Mutex<Vec<SyncSender<PcmCommitted>>>>,
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
             RecorderCommand::Push(samples) => {
                 queued_chunks.fetch_sub(1, Ordering::Relaxed);
+                let start_sample = recorder.manifest.total_samples_written;
                 let result = recorder.push_samples_defer_trim(&samples).and_then(|()| {
                     let pinned = pinned_file_set(&pinned_segments);
                     recorder.trim_expired_segments_except(&pinned)
                 });
+                if result.is_ok() {
+                    let event = PcmCommitted {
+                        session_id: recorder.manifest.session_id.clone(),
+                        audio: recorder.config.audio,
+                        start_sample,
+                        end_sample: recorder.manifest.total_samples_written,
+                    };
+                    let mut subscribers =
+                        commit_subscribers.lock().expect("commit subscriber lock");
+                    subscribers.retain(|subscriber| match subscriber.try_send(event.clone()) {
+                        Ok(()) | Err(TrySendError::Full(_)) => true,
+                        Err(TrySendError::Disconnected(_)) => false,
+                    });
+                }
                 let error = result.err().map(|error| error.to_string());
                 update_worker_status(
                     &status,
@@ -1522,6 +1757,25 @@ fn recorder_worker_loop(
                 );
                 let _ = reply.send(result);
             }
+            RecorderCommand::ReadRange {
+                start_sample,
+                end_sample,
+                reply,
+            } => {
+                let result = recorder
+                    .snapshot()
+                    .and_then(|snapshot| snapshot.read_range_i16(start_sample, end_sample))
+                    .map_err(|error| error.to_string());
+                let error = result.as_ref().err().cloned();
+                update_worker_status(
+                    &status,
+                    &recorder,
+                    queued_chunks.load(Ordering::Relaxed),
+                    active_exports.load(Ordering::Relaxed),
+                    error,
+                );
+                let _ = reply.send(result);
+            }
             RecorderCommand::Trim => {
                 let pinned = pinned_file_set(&pinned_segments);
                 let result = recorder.trim_expired_segments_except(&pinned);
@@ -1546,6 +1800,9 @@ fn recorder_worker_loop(
     status.running = false;
 }
 
+// Export jobs receive immutable snapshots plus their cancellation/status
+// handles. Grouping these unrelated values would obscure their ownership.
+#[allow(clippy::too_many_arguments)]
 fn spawn_export_job(
     id: u64,
     seconds: u32,
@@ -1730,6 +1987,89 @@ fn update_worker_status(
     }
 }
 
+/// Converts one saved WAV file to MP3 while keeping FFmpeg invocation and
+/// completion semantics inside Rust Core. The input file is never modified.
+pub fn transcode_wav_to_mp3(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    ffmpeg_path: impl AsRef<Path>,
+    bitrate_kbps: u32,
+) -> Result<(), EchoCoreError> {
+    let input_path = input_path.as_ref();
+    let output_path = output_path.as_ref();
+    let ffmpeg_path = ffmpeg_path.as_ref();
+    if !input_path.is_file() {
+        return Err(EchoCoreError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("input WAV not found: {}", input_path.display()),
+        )));
+    }
+    if !ffmpeg_path.is_file() {
+        return Err(EchoCoreError::FfmpegUnavailable(format!(
+            "ffmpeg_not_found:{}",
+            ffmpeg_path.display()
+        )));
+    }
+    if input_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none_or(|value| !value.eq_ignore_ascii_case("wav"))
+    {
+        return Err(EchoCoreError::InvalidConfig("input must be a WAV file"));
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = output_path.with_extension("mp3.echoclip-part");
+    let _ = fs::remove_file(&temporary);
+    let bitrate = format!("{}k", sanitize_mp3_bitrate(bitrate_kbps));
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-vn")
+        .arg("-codec:a")
+        .arg("libmp3lame")
+        .arg("-b:a")
+        .arg(bitrate)
+        .arg("-f")
+        .arg("mp3")
+        .arg("-y")
+        .arg(&temporary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command
+        .output()
+        .map_err(|error| EchoCoreError::FfmpegUnavailable(error.to_string()))?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&temporary);
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(EchoCoreError::FfmpegFailed(if stderr.is_empty() {
+            format!("exit_status:{}", output.status)
+        } else {
+            stderr
+        }));
+    }
+    if !temporary.is_file() || fs::metadata(&temporary)?.len() == 0 {
+        let _ = fs::remove_file(&temporary);
+        return Err(EchoCoreError::FfmpegFailed("empty_output".to_string()));
+    }
+    if output_path.exists() {
+        fs::remove_file(output_path)?;
+    }
+    fs::rename(&temporary, output_path)?;
+    Ok(())
+}
 pub fn apply_gain_db(samples: &mut [i16], gain_db: f32) {
     let gain = 10.0_f32.powf(gain_db / 20.0);
     for sample in samples {
@@ -2151,6 +2491,41 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reads_exact_pcm_range_across_segments() {
+        let work_dir = test_dir("read-range");
+        let config = test_config(&work_dir, 2, 10);
+        let mut recorder = SegmentedRecorder::start(config).unwrap();
+        recorder.push_samples(&[1, 2, 3, 4, 5, 6]).unwrap();
+
+        let snapshot = recorder.snapshot().unwrap();
+        assert_eq!(snapshot.read_range_i16(1, 5).unwrap(), vec![2, 3, 4, 5]);
+        assert!(matches!(
+            snapshot.read_range_i16(0, 7),
+            Err(EchoCoreError::RangeUnavailable { .. })
+        ));
+
+        let _ = fs::remove_dir_all(work_dir);
+    }
+
+    #[test]
+    fn worker_commit_subscription_is_non_blocking_and_ranges_are_readable() {
+        let work_dir = test_dir("worker-sync");
+        let config = test_config(&work_dir, 2, 10);
+        let mut worker = RecorderWorker::start(config).unwrap();
+        let commits = worker.subscribe_commits(1);
+        let sync = worker.sync_handle();
+
+        worker.push_samples(&[10, 11, 12]).unwrap();
+        let committed = commits.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!((committed.start_sample, committed.end_sample), (0, 3));
+        assert_eq!(sync.read_range_i16(0, 3).unwrap(), vec![10, 11, 12]);
+        assert_eq!(sync.sample_bounds().unwrap().total_samples_written, 3);
+
+        worker.stop();
+        let _ = fs::remove_dir_all(work_dir);
+    }
+
+    #[test]
     fn manifest_is_written_as_json() {
         let work_dir = test_dir("manifest");
         let config = test_config(&work_dir, 2, 10);
@@ -2166,6 +2541,26 @@ mod tests {
         let _ = fs::remove_dir_all(work_dir);
     }
 
+    #[test]
+    fn replay_limit_can_be_changed_and_trims_old_segments() {
+        let work_dir = test_dir("change-replay-limit");
+        let mut recorder = SegmentedRecorder::start(test_config(&work_dir, 2, 10)).unwrap();
+        recorder.push_samples(&[1; 10]).unwrap();
+
+        recorder.set_max_replay_seconds(4).unwrap();
+
+        assert_eq!(recorder.config().max_replay_seconds, 4);
+        assert_eq!(recorder.manifest().max_replay_seconds, 4);
+        assert_eq!(recorder.available_samples(), 4);
+        assert!(
+            recorder
+                .manifest()
+                .segments
+                .first()
+                .is_some_and(|segment| segment.start_sample >= 6)
+        );
+        let _ = fs::remove_dir_all(work_dir);
+    }
     fn test_config(work_dir: &Path, segment_seconds: u32, max_replay_seconds: u32) -> CoreConfig {
         CoreConfig {
             audio: AudioConfig {

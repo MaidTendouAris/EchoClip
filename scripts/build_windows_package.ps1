@@ -5,8 +5,8 @@
     a single-file Inno Setup installer.
 
     Examples:
-      powershell -ExecutionPolicy Bypass -File scripts\build_windows_package.ps1
-      powershell -ExecutionPolicy Bypass -File scripts\build_windows_package.ps1 -InstallInnoSetup
+      pwsh -NoProfile -File scripts\build_windows_package.ps1
+      pwsh -NoProfile -File scripts\build_windows_package.ps1 -InstallInnoSetup
 #>
 
 [CmdletBinding()]
@@ -25,6 +25,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$pwshExe = Join-Path $PSHOME "pwsh.exe"
+if (-not (Test-Path -LiteralPath $pwshExe)) {
+    throw "PowerShell 7 (pwsh.exe) is required."
+}
 
 function Write-Step {
     param([string]$Message)
@@ -220,7 +224,7 @@ if (-not $SkipTests) {
 if (-not $SkipFfmpegBuild) {
     Write-Step "Building bundled Windows x64 FFmpeg"
     Invoke-Checked `
-        -FilePath "powershell.exe" `
+        -FilePath $pwshExe `
         -Arguments @(
             "-ExecutionPolicy", "Bypass",
             "-File", (Join-Path $PSScriptRoot "build_windows_ffmpeg.ps1")

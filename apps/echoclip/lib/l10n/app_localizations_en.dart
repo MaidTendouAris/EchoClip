@@ -27,9 +27,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get navLibrary => 'Recordings';
 
   @override
-  String get navProcessing => 'Processing';
-
-  @override
   String get navSettings => 'Settings';
 
   @override
@@ -53,6 +50,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String lastRecordingStartedAt(Object time) {
     return 'Last recording $time';
   }
+
+  @override
+  String get lastRecordingTimeUnavailable => 'No previous recording time';
 
   @override
   String get recordingStatusNormal => 'Recording normally';
@@ -165,6 +165,12 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get loudnessRecordingLabel => 'Recording';
+
+  @override
+  String get loudnessHistoryLabel => 'Last 6 seconds';
+
+  @override
   String get loudnessTitle => 'Live loudness';
 
   @override
@@ -178,6 +184,71 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get peakLabel => 'Peak';
+
+  @override
+  String get saveRecentLabel => 'Save recent audio';
+
+  @override
+  String get chooseSaveDuration => 'Choose duration';
+
+  @override
+  String libraryCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count recordings',
+      one: '1 recording',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String librarySelected(int count) {
+    return '$count selected';
+  }
+
+  @override
+  String get allRecordings => 'All';
+
+  @override
+  String get searchRecordings => 'Search recordings';
+
+  @override
+  String get clearSearch => 'Clear search';
+
+  @override
+  String get sortRecordings => 'Sort recordings';
+
+  @override
+  String get libraryNewest => 'Newest first';
+
+  @override
+  String get libraryOldest => 'Oldest first';
+
+  @override
+  String get libraryNameOrder => 'File name';
+
+  @override
+  String get librarySize => 'Size';
+
+  @override
+  String get librarySavedAt => 'Saved at';
+
+  @override
+  String get libraryNoMatches => 'No matching recordings';
+
+  @override
+  String get librarySearchHint =>
+      'Try another name or choose a different group.';
+
+  @override
+  String get libraryEmptyHint => 'Save a clip from Home to see it here.';
+
+  @override
+  String get audioFileLabel => 'Audio';
+
+  @override
+  String get playbackSpeed => 'Playback speed';
 
   @override
   String get libraryTitle => 'Recordings';
@@ -272,38 +343,157 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stop => 'Stop';
 
   @override
-  String get processingTitle => 'Audio processing';
-
-  @override
-  String get sourceRecording => 'Source recording';
-
-  @override
-  String gainDb(Object gain) {
-    return 'Gain $gain dB';
-  }
-
-  @override
   String get outputFormat => 'Output format';
 
   @override
   String get mp3Bitrate => 'MP3 bitrate';
 
   @override
-  String get processing => 'Processing';
+  String get settingsOverview => 'Recording, storage and preferences';
 
   @override
-  String get generateProcessedCopy => 'Generate processed copy';
+  String get internalStorage => 'Internal storage';
 
   @override
-  String get processingComplete =>
-      'Processing complete. A new recording file was created.';
+  String scheduleTaskCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count tasks',
+      one: '1 task',
+    );
+    return '$_temp0';
+  }
 
   @override
-  String get processingFailed =>
-      'Processing failed. Check FFmpeg or the source file.';
+  String get scheduleEmptyHint => 'Create a task or start from a saved preset.';
 
   @override
   String get settingsTitle => 'Settings';
+
+  @override
+  String get serverSettings => 'Server settings';
+
+  @override
+  String get serverSettingsDescription =>
+      'Configure encrypted real-time upload and review connection history';
+
+  @override
+  String get serverConnectionDetails => 'Server connection';
+
+  @override
+  String get serverNotConfigured => 'Not configured';
+
+  @override
+  String get serverSyncDisabled => 'Sync disabled';
+
+  @override
+  String get serverConnected => 'Connected';
+
+  @override
+  String get serverConnectionFailed => 'Connection failed';
+
+  @override
+  String get serverConnecting => 'Connecting';
+
+  @override
+  String get serverSyncEnabled => 'Upload while recording';
+
+  @override
+  String get serverSyncEnabledDescription =>
+      'Upload only PCM recorded after this switch is enabled; network retries never read older cache';
+
+  @override
+  String get serverHost => 'IP address or domain';
+
+  @override
+  String get serverUploadPort => 'Upload port';
+
+  @override
+  String get serverUploadKey => 'Unique upload key';
+
+  @override
+  String get serverUploadKeyConfigured =>
+      'A protected key is already configured. Leave blank to keep it.';
+
+  @override
+  String get serverUploadKeyRequired =>
+      'Enter the 32-byte Base64 key generated by the server';
+
+  @override
+  String get serverUploadKeyInvalid =>
+      'The upload key must be a valid Base64 encoding of exactly 32 bytes';
+
+  @override
+  String get serverDeviceId => 'Client device ID';
+
+  @override
+  String get saveSettings => 'Save settings';
+
+  @override
+  String get serverTestConnection => 'Test connection';
+
+  @override
+  String get serverTestingConnection => 'Testing connection…';
+
+  @override
+  String get serverConnectionTestSucceeded => 'Server connection succeeded';
+
+  @override
+  String get serverConnectionTestFailed => 'Server connection failed';
+
+  @override
+  String get removeServerKey => 'Remove key';
+
+  @override
+  String get serverConnectionStatus => 'Connection status';
+
+  @override
+  String get serverConnectionLogs => 'Connection logs and disconnect history';
+
+  @override
+  String get noServerConnectionLogs =>
+      'No connection events recorded in this app session';
+
+  @override
+  String get serverHostInvalid =>
+      'Enter an IP address or domain without http:// or a path';
+
+  @override
+  String get serverUploadPortInvalid => 'Enter an upload port from 1 to 65535';
+
+  @override
+  String serverUploadLag(int samples) {
+    return 'Pending upload: $samples samples';
+  }
+
+  @override
+  String serverReconnectCount(int count) {
+    return 'Reconnects: $count';
+  }
+
+  @override
+  String serverKeyId(Object keyId) {
+    return 'Key ID: $keyId';
+  }
+
+  @override
+  String get serverEventStarted => 'Sync started';
+
+  @override
+  String get serverEventConnected => 'Connected';
+
+  @override
+  String get serverEventDisconnected => 'Disconnected';
+
+  @override
+  String get serverEventRetentionGap => 'Local retention gap';
+
+  @override
+  String get serverEventStopped => 'Sync stopped';
+
+  @override
+  String get close => 'Close';
 
   @override
   String get recordingFolder => 'Recording folder';
@@ -440,7 +630,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get clearCacheSubtitle =>
-      'Clear temporary export and processing cache; the active replay cache is preserved while recording';
+      'Clear temporary export cache; the active replay cache is preserved while recording';
 
   @override
   String get confirmClearCache =>
@@ -575,16 +765,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String processedRecording(Object name) {
-    return 'Processed recording: $name';
-  }
-
-  @override
-  String processingStatusError(Object error) {
-    return 'Processing error: $error';
-  }
-
-  @override
   String cacheClearedStatus(Object size) {
     return 'Cache cleared: $size';
   }
@@ -604,4 +784,258 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get unnamedGroup => 'Unnamed group';
+
+  @override
+  String get navScheduledTasks => 'Scheduled tasks';
+
+  @override
+  String get scheduledTasksTitle => 'Scheduled tasks';
+
+  @override
+  String get newScheduledTask => 'New task';
+
+  @override
+  String scheduleOperationFailed(Object error) {
+    return 'Scheduled task operation failed: $error';
+  }
+
+  @override
+  String get loadingScheduledTasks => 'Loading scheduled tasks…';
+
+  @override
+  String get noScheduledTasks => 'No scheduled tasks';
+
+  @override
+  String get requestExactAlarm => 'Allow exact alarms';
+
+  @override
+  String get noUpcomingTask => 'No task is waiting to run';
+
+  @override
+  String nextScheduledTask(Object remaining, Object time) {
+    return 'Next run: $time ($remaining remaining)';
+  }
+
+  @override
+  String scheduleDue(Object remaining, Object time) {
+    return 'Scheduled $time ($remaining remaining)';
+  }
+
+  @override
+  String get scheduleHistory => 'Execution history';
+
+  @override
+  String get noScheduleHistory => 'No execution history';
+
+  @override
+  String schedulePlannedAt(Object time) {
+    return 'Planned $time';
+  }
+
+  @override
+  String scheduleStartedAt(Object time) {
+    return 'Started $time';
+  }
+
+  @override
+  String scheduleLateBy(Object duration) {
+    return 'Late by $duration';
+  }
+
+  @override
+  String get deleteScheduledTask => 'Delete scheduled task';
+
+  @override
+  String confirmDeleteScheduledTask(Object name) {
+    return 'Delete “$name”? Existing execution history is kept.';
+  }
+
+  @override
+  String get editScheduledTask => 'Edit scheduled task';
+
+  @override
+  String get scheduleName => 'Task name';
+
+  @override
+  String get scheduleTaskSettings => 'Task settings';
+
+  @override
+  String get scheduleRunTime => 'Run time';
+
+  @override
+  String get scheduleActionsAtRun => 'Actions when the task runs';
+
+  @override
+  String get scheduleHours => 'Hours';
+
+  @override
+  String get scheduleMinutes => 'Minutes';
+
+  @override
+  String get scheduleSeconds => 'Seconds';
+
+  @override
+  String scheduleChooseDate(Object date) {
+    return 'Date: $date';
+  }
+
+  @override
+  String get scheduleCountdown => 'Countdown';
+
+  @override
+  String get scheduleTimePoint => 'Time point';
+
+  @override
+  String get scheduleRecordingAction => 'Recording action';
+
+  @override
+  String get scheduleNoChange => 'No change';
+
+  @override
+  String get scheduleStartRecording => 'Start recording';
+
+  @override
+  String get scheduleStopRecording => 'Stop recording';
+
+  @override
+  String get scheduleUploadAction => 'Live upload';
+
+  @override
+  String get scheduleEnableUpload => 'Enable upload';
+
+  @override
+  String get scheduleDisableUpload => 'Disable upload';
+
+  @override
+  String get scheduleSaveRecent => 'Save recent audio';
+
+  @override
+  String get scheduleSaveSeconds => 'Save duration (seconds)';
+
+  @override
+  String get scheduleAllowPartial =>
+      'Save available audio when the buffer is shorter';
+
+  @override
+  String get scheduleEnabled => 'Enable task after saving';
+
+  @override
+  String get saveScheduledTask => 'Save task';
+
+  @override
+  String get scheduleSaveFailed =>
+      'Could not save the task. Check the input and platform state.';
+
+  @override
+  String get scheduleNameRequired => 'Enter a task name.';
+
+  @override
+  String get scheduleActionRequired => 'Select at least one action.';
+
+  @override
+  String get scheduleCountdownRequired =>
+      'The countdown must be greater than 0 seconds.';
+
+  @override
+  String get scheduleTimePointPast =>
+      'The selected time must be in the future.';
+
+  @override
+  String get scheduleSaveDurationInvalid =>
+      'Save duration must be between 1 and 86400 seconds.';
+
+  @override
+  String scheduleCountdownWithDuration(Object duration) {
+    return 'Countdown $duration';
+  }
+
+  @override
+  String scheduleSaveActionSummary(Object format, Object seconds) {
+    return 'Save recent $seconds s · $format';
+  }
+
+  @override
+  String get convertWavToMp3 => 'Convert to MP3';
+
+  @override
+  String get convertWavBitrate => 'Choose MP3 bitrate';
+
+  @override
+  String get convertingWavToMp3 => 'Converting WAV…';
+
+  @override
+  String convertedWavToMp3(Object name) {
+    return 'Created MP3: $name';
+  }
+
+  @override
+  String convertWavToMp3Failed(Object error) {
+    return 'WAV to MP3 failed: $error';
+  }
+
+  @override
+  String get scheduleNameAutomatic => 'Leave blank to generate a name';
+
+  @override
+  String get scheduleTaskNamePrefix => 'Task';
+
+  @override
+  String get schedulePresetNamePrefix => 'Preset';
+
+  @override
+  String get saveSchedulePreset => 'Save preset';
+
+  @override
+  String get deleteSchedulePreset => 'Delete preset';
+
+  @override
+  String schedulePresetsTitle(int count) {
+    return 'Task presets ($count/9)';
+  }
+
+  @override
+  String get schedulePresetsHint =>
+      'Save up to 9 presets in the task editor to quickly create tasks later.';
+
+  @override
+  String confirmDeleteSchedulePreset(String name) {
+    return 'Delete preset “$name”? Existing tasks will be kept.';
+  }
+
+  @override
+  String get schedulePresetLimit =>
+      'You can save up to 9 presets. Delete a preset first.';
+
+  @override
+  String get saveInProgress => 'Saving · Cancel';
+
+  @override
+  String get saveCanceling => 'Canceling…';
+
+  @override
+  String get saveCanceled => 'Save canceled';
+
+  @override
+  String saveWritingProgress(int progress) {
+    return 'Writing $progress% · Cancel';
+  }
+
+  @override
+  String get shareRecording => 'Share';
+
+  @override
+  String get shareRecordingFailed =>
+      'Unable to share. Check that the recording exists and folder access is allowed.';
+
+  @override
+  String get saveFailedStatus => 'Save failed';
+
+  @override
+  String get saveCancelFailedStatus => 'Cancel failed';
+
+  @override
+  String get saveCancelingStatus => 'Canceling save';
+
+  @override
+  String get saveWritingStatus => 'Writing audio';
 }

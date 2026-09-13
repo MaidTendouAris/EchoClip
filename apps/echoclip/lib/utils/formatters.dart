@@ -1,17 +1,11 @@
 part of '../main.dart';
 
-String _appBarTitle(BuildContext context, AppSection section) {
-  return section == AppSection.recorder
-      ? context.l10n.appTitle
-      : _sectionLabel(context, section);
-}
-
 String _sectionLabel(BuildContext context, AppSection section) {
   final l10n = context.l10n;
   return switch (section) {
     AppSection.recorder => l10n.navHome,
     AppSection.library => l10n.navLibrary,
-    AppSection.processing => l10n.navProcessing,
+    AppSection.scheduledTasks => l10n.navScheduledTasks,
     AppSection.settings => l10n.navSettings,
   };
 }
@@ -144,19 +138,9 @@ IconData _selectedIconFor(AppSection section) {
   return switch (section) {
     AppSection.recorder => Icons.home,
     AppSection.library => Icons.library_music,
-    AppSection.processing => Icons.equalizer,
+    AppSection.scheduledTasks => Icons.schedule,
     AppSection.settings => Icons.tune,
   };
-}
-
-extension _FirstOrNullExtension<T> on Iterable<T> {
-  T? get firstOrNull {
-    final iterator = this.iterator;
-    if (!iterator.moveNext()) {
-      return null;
-    }
-    return iterator.current;
-  }
 }
 
 String _formatDuration(int totalSeconds) {

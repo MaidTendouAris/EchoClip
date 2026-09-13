@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.app.KeyguardManager
 import android.content.BroadcastReceiver
-import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -20,15 +19,11 @@ import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.content.pm.ServiceInfo
-import android.provider.DocumentsContract
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
 import java.util.ArrayDeque
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -47,8 +42,7 @@ class ReplayForegroundService : Service() {
     private lateinit var runtimeDir: File
     private var captureThread: Thread? = null
     private var screenReceiver: BroadcastReceiver? = null
-    private val saveJobs = ConcurrentHashMap<Long, SaveJobState>()
-    private val nextSaveJobId = AtomicLong(1)
+    private val saveJobs get() = ClipSaveJobs.jobs
     private val levelLock = Any()
     private val levelFrames = ArrayDeque<LevelFrame>(MAX_LEVEL_FRAMES)
     private var levelSquareSum = 0.0
@@ -59,7 +53,15 @@ class ReplayForegroundService : Service() {
     @Volatile
     private var captureError: String? = null
     @Volatile
+    private var syncConfigurationError: String? = null
+    @Volatile
     private var shouldCapture = false
+    @Volatile
+    private var schedulerArmed = false
+    @Volatile
+    private var stopRequested = false
+    @Volatile
+    private var scheduledExecutionInFlight = false
     @Volatile
     private var sessionStartedUnixMillis: Long = 0L
 
@@ -77,27 +79,41 @@ class ReplayForegroundService : Service() {
         if (filesDir.usableSpace < MIN_INTERNAL_FREE_BYTES) {
             captureError = "storage_low:${filesDir.usableSpace}"
         }
-        rustBufferHandle = RustAudioCore.startRecorder(
-            tempDir = runtimeDir.absolutePath,
-            sampleRate = sampleRate,
-            channels = CHANNELS,
-            segmentSeconds = SEGMENT_SECONDS,
-            maxReplaySeconds = bufferSeconds,
-            queueCapacityChunks = QUEUE_CAPACITY_CHUNKS,
-        )
+        val recorder = ClipSaveJobs.acquireRecorder(this)
+        rustBufferHandle = recorder.handle
+        sampleRate = recorder.settings.sampleRate
+        bufferSeconds = recorder.settings.bufferSeconds
         if (rustBufferHandle == 0L) {
             captureError = "rust_recorder_start_failed"
+        } else {
+            applySyncSettings()
         }
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        stopRequested = false
         if (intent?.action == ACTION_STOP) {
-            stopSelf()
+            stopManualCapture()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_SAVE_30) {
             saveLatestClip(30)
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_SCHEDULE_ARM) {
+            schedulerArmed = true
+            startAsForeground(buildNotification())
+            updateNotification()
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_SCHEDULE_TICK) {
+            schedulerArmed = true
+            startAsForeground(buildNotification())
+            val executions = intent.getStringExtra(EXTRA_SCHEDULE_EXECUTIONS).orEmpty()
+            if (executions.isNotBlank()) {
+                executeScheduledExecutions(executions)
+            }
             return START_STICKY
         }
 
@@ -142,8 +158,7 @@ class ReplayForegroundService : Service() {
                 this,
                 RustAudioCore.availableMillis(rustBufferHandle),
             )
-            RustAudioCore.stopRecorder(rustBufferHandle)
-            RustAudioCore.destroy(rustBufferHandle)
+            ClipSaveJobs.releaseRecorder(rustBufferHandle)
             rustBufferHandle = 0
         }
         isRunning = false
@@ -225,6 +240,8 @@ class ReplayForegroundService : Service() {
 
     private fun notificationText(): String {
         return when {
+            schedulerArmed && !isRunning ->
+                "Scheduled tasks are armed. Recording starts only when a task is due."
             recordingMode != MODE_LOCKSCREEN ->
                 "Standard recording mode is writing to the replay cache."
             evidenceState == EVIDENCE_RECORDING ->
@@ -239,7 +256,7 @@ class ReplayForegroundService : Service() {
     }
 
     private fun updateNotification() {
-        val manager = getSystemService(NotificationManager::class.java)
+        val manager = getSystemService(NotificationManager::class.java) ?: return
         manager.notify(NOTIFICATION_ID, buildNotification())
     }
 
@@ -388,6 +405,8 @@ class ReplayForegroundService : Service() {
 
     private fun stopCapture() {
         shouldCapture = false
+        // Unblock AudioRecord.read before waiting for its thread to finish.
+        runCatching { audioRecord?.stop() }
         captureThread?.join(500)
         captureThread = null
         audioRecord = null
@@ -415,9 +434,230 @@ class ReplayForegroundService : Service() {
         }
     }
 
+    fun setSchedulerArmed(armed: Boolean) {
+        schedulerArmed = armed
+        releaseIfIdle()
+    }
+
+    private fun releaseIfIdle() {
+        stopRequested = !schedulerArmed && !isRunning &&
+            !scheduledExecutionInFlight && evidenceState == EVIDENCE_OFF
+        if (stopRequested) {
+            stopSelf()
+        } else {
+            updateNotification()
+        }
+    }
+
+    fun applyRecordingMode(settings: RecordingModeSettings): Map<String, Any?> {
+        if (recordingMode != settings.mode) {
+            // A mode switch starts a paused session. Remove the old screen
+            // listener before stopping capture so it cannot restart recording.
+            leaveEvidenceMode()
+            stopCapture()
+        }
+        recordingMode = settings.mode
+        lockRecordingTrigger = settings.trigger
+        releaseIfIdle()
+        return recordingControlStatus()
+    }
+
+    fun stopManualCapture(): Map<String, Any?> {
+        val wasActive = isRunning || evidenceState != EVIDENCE_OFF
+        leaveEvidenceMode()
+        stopCapture()
+        releaseIfIdle()
+        return recordingControlStatus() + mapOf("stopped" to wasActive)
+    }
+
+    internal fun recordingControlStatus(): Map<String, Any?> = mapOf(
+        "running" to isRunning,
+        "serviceActive" to !stopRequested,
+        "serviceState" to serviceState(),
+        "recordingMode" to recordingMode,
+        "lockRecordingTrigger" to lockRecordingTrigger,
+        "evidenceState" to evidenceState,
+        "evidenceLastStopReason" to evidenceLastStopReason,
+        "schedulerArmed" to schedulerArmed,
+    )
+
+    private fun executeScheduledExecutions(executionsJson: String) {
+        scheduledExecutionInFlight = true
+        Thread {
+            try {
+                val executions = runCatching { JSONArray(executionsJson) }.getOrNull()
+                    ?: return@Thread
+                for (executionIndex in 0 until executions.length()) {
+                    val execution = executions.optJSONObject(executionIndex) ?: continue
+                    val executionId = execution.optString("executionId")
+                    val actions = execution.optJSONArray("actions") ?: JSONArray()
+                    val results = JSONArray()
+                    for (actionPosition in 0 until actions.length()) {
+                        val due = actions.optJSONObject(actionPosition) ?: continue
+                        val actionIndex = due.optInt("actionIndex")
+                        val action = due.optJSONObject("action") ?: JSONObject()
+                        results.put(executeScheduledAction(actionIndex, action))
+                    }
+                    ScheduleCoordinator.complete(this, executionId, results)
+                }
+            } finally {
+                scheduledExecutionInFlight = false
+                ScheduleCoordinator.reschedule(this)
+                updateNotification()
+            }
+        }.apply {
+            name = "EchoClipScheduledExecution"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun executeScheduledAction(
+        actionIndex: Int,
+        action: JSONObject,
+    ): JSONObject {
+        return when (action.optString("type")) {
+            "set_upload_enabled" -> executeScheduledUpload(
+                actionIndex,
+                action.optBoolean("enabled"),
+            )
+            "start_recording" -> {
+                if (isRunning) {
+                    scheduledResult(actionIndex, "no_op")
+                } else {
+                    captureError = null
+                    startCapture()
+                    if (isRunning) {
+                        scheduledResult(actionIndex, "succeeded")
+                    } else {
+                        scheduledResult(
+                            actionIndex,
+                            "platform_blocked",
+                            captureError ?: "PLATFORM_MICROPHONE_BLOCKED",
+                        )
+                    }
+                }
+            }
+            "stop_recording" -> {
+                if (!isRunning) {
+                    scheduledResult(actionIndex, "no_op")
+                } else {
+                    stopCapture()
+                    scheduledResult(actionIndex, "succeeded")
+                }
+            }
+            "save_recent" -> executeScheduledSave(
+                actionIndex = actionIndex,
+                seconds = action.optInt("seconds", 30).coerceIn(1, 86_400),
+                format = action.optString("format", "mp3"),
+                bitrate = action.optInt("mp3BitrateKbps", 128),
+                allowPartial = action.optBoolean("allowPartial", true),
+            )
+            else -> scheduledResult(actionIndex, "failed", "UNKNOWN_SCHEDULED_ACTION")
+        }
+    }
+
+    private fun executeScheduledUpload(
+        actionIndex: Int,
+        enabled: Boolean,
+    ): JSONObject {
+        val before = RecordingStorage.getSyncSettings(this)
+        if (before.enabled == enabled) {
+            return scheduledResult(actionIndex, "no_op")
+        }
+        if (enabled && !before.keyConfigured) {
+            return scheduledResult(actionIndex, "failed", "UPLOAD_NOT_CONFIGURED")
+        }
+        val settings = runCatching {
+            RecordingStorage.setSyncSettings(
+                context = this,
+                enabled = enabled,
+                serverHost = before.serverHost,
+                uploadPort = before.uploadPort,
+                uploadKeyBase64 = null,
+                clearKey = false,
+            )
+        }.getOrElse {
+            return scheduledResult(
+                actionIndex,
+                "failed",
+                "UPLOAD_CONFIGURATION_FAILED:${it.javaClass.simpleName}",
+            )
+        }
+        val applied = applySyncSettings()["applied"] == true
+        return if (applied || !settings.enabled) {
+            scheduledResult(actionIndex, "succeeded")
+        } else {
+            scheduledResult(actionIndex, "failed", "UPLOAD_APPLY_FAILED")
+        }
+    }
+
+    private fun executeScheduledSave(
+        actionIndex: Int,
+        seconds: Int,
+        format: String,
+        bitrate: Int,
+        allowPartial: Boolean,
+    ): JSONObject {
+        val availableBefore = RustAudioCore.availableMillis(rustBufferHandle)
+        if (availableBefore <= 0L) {
+            return scheduledResult(actionIndex, "failed", "EXPORT_BUFFER_EMPTY")
+        }
+        if (!allowPartial && availableBefore < seconds * 1_000L) {
+            return scheduledResult(actionIndex, "failed", "EXPORT_RANGE_UNAVAILABLE")
+        }
+        val response = saveLatestClipInternal(seconds, format, bitrate)
+        if (response["saved"] != true) {
+            return scheduledResult(
+                actionIndex,
+                "failed",
+                response["error"]?.toString() ?: "EXPORT_FAILED",
+            )
+        }
+        val jobId = (response["jobId"] as? Number)?.toLong()
+            ?: return scheduledResult(actionIndex, "failed", "EXPORT_JOB_NOT_FOUND")
+        val started = SystemClock.elapsedRealtime()
+        while (SystemClock.elapsedRealtime() - started < EXPORT_WAIT_TIMEOUT_MILLIS) {
+            val job = saveJobs[jobId]
+                ?: return scheduledResult(actionIndex, "failed", "EXPORT_JOB_NOT_FOUND")
+            when (job.state) {
+                "Finished" -> {
+                    val actualMillis = job.durationSeconds * 1_000L
+                    val partial = actualMillis < seconds * 1_000L
+                    return scheduledResult(
+                        actionIndex,
+                        if (partial) "partial" else "succeeded",
+                        if (partial) "EXPORT_PARTIAL_DURATION" else null,
+                        job.uri,
+                        actualMillis,
+                    )
+                }
+                "Failed", "Canceled" -> return scheduledResult(
+                    actionIndex,
+                    "failed",
+                    job.error ?: "EXPORT_FAILED",
+                )
+            }
+            Thread.sleep(EXPORT_POLL_INTERVAL_MILLIS)
+        }
+        return scheduledResult(actionIndex, "failed", "EXPORT_TIMEOUT")
+    }
+
+    private fun scheduledResult(
+        actionIndex: Int,
+        state: String,
+        errorCode: String? = null,
+        outputUri: String? = null,
+        actualDurationMillis: Long? = null,
+    ): JSONObject = JSONObject()
+        .put("actionIndex", actionIndex)
+        .put("state", state)
+        .put("errorCode", errorCode ?: JSONObject.NULL)
+        .put("outputUri", outputUri ?: JSONObject.NULL)
+        .put("actualDurationMillis", actualDurationMillis ?: JSONObject.NULL)
     fun saveLatestClip(seconds: Int): Map<String, Any?> {
         return try {
-            saveLatestClipInternal(seconds)
+            saveLatestClipInternal(seconds, null, null)
         } catch (error: Exception) {
             mapOf(
                 "saved" to false,
@@ -426,7 +666,11 @@ class ReplayForegroundService : Service() {
         }
     }
 
-    private fun saveLatestClipInternal(seconds: Int): Map<String, Any?> {
+    private fun saveLatestClipInternal(
+        seconds: Int,
+        formatOverride: String?,
+        bitrateOverride: Int?,
+    ): Map<String, Any?> {
         if (rustBufferHandle == 0L) {
             return mapOf(
                 "saved" to false,
@@ -441,38 +685,8 @@ class ReplayForegroundService : Service() {
             )
         }
 
-        val folderUri = RecordingStorage.getRecordingFolderUri(this)
-            ?: return mapOf(
-                "saved" to false,
-                "error" to "recording_folder_not_selected",
-            )
-        val exportSettings = RecordingStorage.getExportSettings(this)
-
-        cleanupFinishedSaveJobs()
-        val saveJobId = nextSaveJobId.getAndIncrement()
-        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val state = SaveJobState(
-            id = saveJobId,
-            requestedSeconds = seconds,
-            state = "Queued",
-            createdMs = SystemClock.elapsedRealtime(),
-        )
-        saveJobs[saveJobId] = state
-        Thread {
-            runSaveJob(state, seconds, folderUri, timestamp, exportSettings)
-        }.apply {
-            name = "EchoClipSaveJob-$saveJobId"
-            isDaemon = true
-            start()
-        }
-
-        return mapOf(
-            "saved" to true,
-            "pending" to true,
-            "jobId" to saveJobId,
-            "state" to state.state,
-            "format" to exportSettings.format,
-        )
+        return ClipSaveJobs.start(this, seconds, rustBufferHandle, formatOverride,
+            bitrateOverride)
     }
 
     fun status(): Map<String, Any?> {
@@ -494,7 +708,7 @@ class ReplayForegroundService : Service() {
         val ffmpegPath = resolveFfmpegPath()
         return mapOf(
             "running" to isRunning,
-            "serviceActive" to true,
+            "serviceActive" to !stopRequested,
             "serviceState" to serviceState(),
             "statusCode" to serviceState(),
             "recordingMode" to recordingMode,
@@ -530,49 +744,49 @@ class ReplayForegroundService : Service() {
             "mp3BitrateKbps" to exportSettings.mp3BitrateKbps,
             "ffmpegAvailable" to (ffmpegPath != null),
             "ffmpegPath" to ffmpegPath,
+            "syncConfigured" to rustStatus.syncConfigured,
+            "syncStatus" to rustStatus.sync?.toMap(),
+            "syncConfigurationError" to syncConfigurationError,
         )
     }
 
-    fun cancelSaveJob(jobId: Long): Map<String, Any?> {
-        val job = saveJobs[jobId] ?: return mapOf(
-            "canceled" to false,
-            "error" to "save_job_not_found",
-        )
-        job.cancelRequested = true
-        if (job.rustJobId != 0L) {
-            RustAudioCore.cancelExport(rustBufferHandle, job.rustJobId)
+    fun applySyncSettings(): Map<String, Any?> {
+        val settings = RecordingStorage.getSyncSettings(this)
+        val uploadKey = if (settings.enabled) RecordingStorage.getSyncUploadKey(this) else ""
+        val applied = if (rustBufferHandle == 0L) {
+            !settings.enabled
+        } else {
+            RustAudioCore.configureSync(
+                handle = rustBufferHandle,
+                enabled = settings.enabled,
+                serverUrl = settings.serverUrl,
+                uploadKeyBase64 = uploadKey.orEmpty(),
+                deviceId = settings.deviceId,
+            )
         }
-        if (job.state == "Queued" || job.state == "Exporting" || job.state == "CopyingToSaf") {
-            job.state = "Canceling"
-        }
-        return mapOf(
-            "canceled" to true,
-            "jobId" to jobId,
-            "state" to job.state,
+        syncConfigurationError = if (applied) null else "sync_native_config_failed"
+        return settings.toMap() + mapOf(
+            "applied" to applied,
+            "error" to syncConfigurationError,
         )
     }
+
+    fun cancelSaveJob(jobId: Long): Map<String, Any?> = ClipSaveJobs.cancel(jobId)
+
 
     fun meterStatus(): Map<String, Any?> {
         val clockMs = SystemClock.elapsedRealtime()
         val levels = synchronized(levelLock) {
             val latest = levelFrames.lastOrNull()
-            var peak = 0.0f
-            for (frame in levelFrames.descendingIterator()) {
-                if (clockMs - frame.timestampMs > PEAK_HOLD_MILLIS) {
-                    break
-                }
-                peak = maxOf(peak, frame.level)
-            }
-            val level = if (latest == null || clockMs - latest.timestampMs > LEVEL_STALE_MILLIS) {
-                0.0f
+            if (latest == null || clockMs - latest.timestampMs > LEVEL_STALE_MILLIS) {
+                0.0f to 0.0f
             } else {
-                latest.level
+                latest.level to latest.peak
             }
-            level to peak
         }
         return mapOf(
             "running" to isRunning,
-            "serviceActive" to true,
+            "serviceActive" to !stopRequested,
             "serviceState" to serviceState(),
             "statusCode" to serviceState(),
             "recordingMode" to recordingMode,
@@ -622,10 +836,9 @@ class ReplayForegroundService : Service() {
                 levelSampleCount += 1
 
                 if (levelSampleCount >= frameSamples) {
-                    val rms = sqrt(levelSquareSum / levelSampleCount) / Short.MAX_VALUE
-                    val peakLevel = levelPeak.toDouble() / Short.MAX_VALUE
-                    val next = sqrt(((rms * 0.82) + (peakLevel * 0.18)).coerceIn(0.0, 1.0)).toFloat()
-                    appendLevelFrame(next)
+                    val rms = sqrt(levelSquareSum / levelSampleCount) / 32768.0
+                    val peakLevel = levelPeak.toDouble() / 32768.0
+                    appendLevelFrame(rms.toFloat(), peakLevel.toFloat())
                     levelSquareSum = 0.0
                     levelPeak = 0
                     levelSampleCount = 0
@@ -634,159 +847,18 @@ class ReplayForegroundService : Service() {
         }
     }
 
-    private fun appendLevelFrame(level: Float) {
+    private fun appendLevelFrame(level: Float, peak: Float) {
         if (levelFrames.size >= MAX_LEVEL_FRAMES) {
             levelFrames.removeFirst()
         }
-        val smoothed = if (levelFrames.isEmpty()) {
-            level
-        } else {
-            levelFrames.last.level * 0.25f + level * 0.75f
-        }
-        levelFrames.addLast(LevelFrame(smoothed, SystemClock.elapsedRealtime()))
-    }
-
-    private fun waitForExport(job: SaveJobState, jobId: Long): RustExportStatus {
-        var last = RustAudioCore.exportStatus(rustBufferHandle, jobId)
-        val start = SystemClock.elapsedRealtime()
-        while (last.state == "Pending" || last.state == "Running") {
-            if (job.cancelRequested) {
-                RustAudioCore.cancelExport(rustBufferHandle, jobId)
-                return last.copy(state = "Canceled", error = "canceled")
-            }
-            if (SystemClock.elapsedRealtime() - start > EXPORT_WAIT_TIMEOUT_MILLIS) {
-                return last.copy(state = "Failed", error = "export_timeout")
-            }
-            Thread.sleep(EXPORT_POLL_INTERVAL_MILLIS)
-            last = RustAudioCore.exportStatus(rustBufferHandle, jobId)
-        }
-        return last
-    }
-
-    private fun runSaveJob(
-        state: SaveJobState,
-        seconds: Int,
-        folderUri: Uri,
-        timestamp: String,
-        exportSettings: ExportSettings,
-    ) {
-        var cacheFile: File? = null
-        try {
-            if (state.cancelRequested) {
-                state.cancel()
-                return
-            }
-            state.state = "Exporting"
-            state.format = exportSettings.format
-            val extension = exportSettings.format
-            cacheFile = File(cacheDir, "echoclip-export-$timestamp-${seconds}s.$extension")
-            val rustJobId = RustAudioCore.saveLatestToCache(
-                rustBufferHandle,
-                seconds,
-                cacheFile.absolutePath,
-                exportSettings.format,
-                exportSettings.mp3BitrateKbps,
-                resolveFfmpegPath(),
-            )
-            state.rustJobId = rustJobId
-            if (rustJobId == 0L) {
-                state.fail("export_job_start_failed")
-                return
-            }
-            if (state.cancelRequested) {
-                RustAudioCore.cancelExport(rustBufferHandle, rustJobId)
-            }
-
-            val exportStatus = waitForExport(state, rustJobId)
-            if (exportStatus.state == "Canceled" || state.cancelRequested) {
-                state.cancel()
-                return
-            }
-            if (exportStatus.state != "Finished") {
-                state.fail("export_failed:${exportStatus.error ?: exportStatus.state}")
-                return
-            }
-
-            state.samplesWritten = exportStatus.samplesWritten
-            state.durationSeconds = if (sampleRate <= 0) {
-                0L
-            } else {
-                exportStatus.samplesWritten / sampleRate
-            }
-            state.state = "CopyingToSaf"
-            state.copyTotalBytes = cacheFile.length()
-            if (state.cancelRequested) {
-                state.cancel()
-                return
-            }
-
-            val displayName = "echoclip-$timestamp-${state.durationSeconds}s.$extension"
-            state.name = displayName
-            val parentDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
-                folderUri,
-                DocumentsContract.getTreeDocumentId(folderUri),
-            )
-            val outputUri = DocumentsContract.createDocument(
-                contentResolver,
-                parentDocumentUri,
-                mimeTypeForExport(exportSettings.format),
-                displayName,
-            ) ?: run {
-                state.fail("create_document_failed")
-                return
-            }
-
-            try {
-                copyFileToDocument(contentResolver, outputUri, cacheFile, state)
-            } catch (error: Exception) {
-                runCatching { DocumentsContract.deleteDocument(contentResolver, outputUri) }
-                if (state.cancelRequested) {
-                    state.cancel()
-                    return
-                }
-                state.fail("write_failed:${error.javaClass.simpleName}:${error.message}")
-                return
-            }
-
-            state.uri = outputUri.toString()
-            state.state = "Finished"
-            state.finishedMs = SystemClock.elapsedRealtime()
-        } catch (error: Exception) {
-            state.fail("exception:${error.javaClass.simpleName}:${error.message}")
-        } finally {
-            cacheFile?.delete()
-        }
-    }
-
-    private fun copyFileToDocument(
-        resolver: ContentResolver,
-        outputUri: Uri,
-        source: File,
-        state: SaveJobState,
-    ) {
-        val output = resolver.openOutputStream(outputUri, "w")
-            ?: throw IllegalStateException("Unable to open output document")
-        output.use { destination ->
-            FileInputStream(source).use { input ->
-                val buffer = ByteArray(COPY_BUFFER_BYTES)
-                while (true) {
-                    if (state.cancelRequested) {
-                        throw InterruptedException("copy_canceled")
-                    }
-                    val read = input.read(buffer)
-                    if (read < 0) {
-                        break
-                    }
-                    destination.write(buffer, 0, read)
-                    state.copyBytesWritten += read.toLong()
-                }
-            }
-        }
+        // Keep physical amplitudes intact; Flutter owns display ballistics.
+        levelFrames.addLast(LevelFrame(level, peak, SystemClock.elapsedRealtime()))
     }
 
     private fun cleanupStaleCacheExports() {
         cacheDir.listFiles()
-            ?.filter { it.name.startsWith("echoclip-export-") }
+            ?.filter { it.name.startsWith("echoclip-export-") &&
+                System.currentTimeMillis() - it.lastModified() > 24 * 60 * 60 * 1_000L }
             ?.forEach { it.delete() }
     }
 
@@ -800,26 +872,12 @@ class ReplayForegroundService : Service() {
         return candidates.firstOrNull { it.exists() && it.canExecute() }?.absolutePath
     }
 
-    private fun mimeTypeForExport(format: String): String {
-        return when (format.lowercase(Locale.US)) {
-            "wav" -> "audio/wav"
-            else -> "audio/mpeg"
-        }
-    }
-
-    private fun cleanupFinishedSaveJobs() {
-        val finished = saveJobs.values
-            .filter { it.state == "Finished" || it.state == "Failed" || it.state == "Canceled" }
-            .sortedByDescending { it.finishedMs ?: it.createdMs }
-            .drop(MAX_SAVE_JOB_HISTORY)
-        for (job in finished) {
-            saveJobs.remove(job.id)
-        }
-    }
-
     companion object {
         const val ACTION_STOP = "com.echoclip.echoclip.STOP_REPLAY"
         const val ACTION_SAVE_30 = "com.echoclip.echoclip.SAVE_30"
+        const val ACTION_SCHEDULE_ARM = "com.echoclip.echoclip.SCHEDULE_ARM"
+        const val ACTION_SCHEDULE_TICK = "com.echoclip.echoclip.SCHEDULE_TICK"
+        const val EXTRA_SCHEDULE_EXECUTIONS = "schedule_executions"
         const val EXTRA_RECORDING_MODE = "recording_mode"
         const val EXTRA_LOCK_RECORDING_TRIGGER = "lock_recording_trigger"
         const val MODE_STANDARD = "standard"
@@ -846,13 +904,11 @@ class ReplayForegroundService : Service() {
         private const val QUEUE_CAPACITY_CHUNKS = 32
         private const val LEVEL_FRAME_MILLIS = 50
         private const val LEVEL_STALE_MILLIS = 300
-        private const val PEAK_HOLD_MILLIS = 1_600
         private const val MAX_LEVEL_FRAMES = 160
         private const val EXPORT_POLL_INTERVAL_MILLIS = 100L
         private const val EXPORT_WAIT_TIMEOUT_MILLIS = 10 * 60 * 1_000L
         private const val MIN_INTERNAL_FREE_BYTES = 256L * 1024L * 1024L
         private const val MAX_SAVE_JOB_HISTORY = 32
-        private const val COPY_BUFFER_BYTES = 256 * 1024
 
         @Volatile
         var isRunning: Boolean = false
@@ -864,80 +920,6 @@ class ReplayForegroundService : Service() {
 
 private data class LevelFrame(
     val level: Float,
+    val peak: Float,
     val timestampMs: Long,
 )
-
-private class SaveJobState(
-    val id: Long,
-    val requestedSeconds: Int,
-    @Volatile var state: String,
-    val createdMs: Long,
-) {
-    @Volatile
-    var rustJobId: Long = 0L
-
-    @Volatile
-    var format: String = "mp3"
-
-    @Volatile
-    var name: String? = null
-
-    @Volatile
-    var uri: String? = null
-
-    @Volatile
-    var durationSeconds: Long = 0L
-
-    @Volatile
-    var samplesWritten: Long = 0L
-
-    @Volatile
-    var copyBytesWritten: Long = 0L
-
-    @Volatile
-    var copyTotalBytes: Long = 0L
-
-    @Volatile
-    var cancelRequested: Boolean = false
-
-    @Volatile
-    var error: String? = null
-
-    @Volatile
-    var finishedMs: Long? = null
-
-    fun fail(message: String) {
-        error = message
-        state = "Failed"
-        finishedMs = SystemClock.elapsedRealtime()
-    }
-
-    fun cancel() {
-        error = "canceled"
-        state = "Canceled"
-        finishedMs = SystemClock.elapsedRealtime()
-    }
-
-    fun toMap(): Map<String, Any?> = mapOf(
-        "id" to id,
-        "rustJobId" to rustJobId,
-        "requestedSeconds" to requestedSeconds,
-        "format" to format,
-        "state" to state,
-        "name" to name,
-        "uri" to uri,
-        "durationSeconds" to durationSeconds,
-        "samplesWritten" to samplesWritten,
-        "copyBytesWritten" to copyBytesWritten,
-        "copyTotalBytes" to copyTotalBytes,
-        "progress" to if (copyTotalBytes > 0L) {
-            copyBytesWritten.toDouble() / copyTotalBytes.toDouble()
-        } else {
-            null
-        },
-        "cancelRequested" to cancelRequested,
-        "error" to error,
-        "createdMs" to createdMs,
-        "finishedMs" to finishedMs,
-    )
-}

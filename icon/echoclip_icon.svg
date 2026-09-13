@@ -1,0 +1,25 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">EchoClip icon</title>
+  <desc id="desc">A minimal rounded app icon showing slim audio waveform bars with a bright EchoClip accent.</desc>
+  <defs>
+    <linearGradient id="tile" x1="218" y1="148" x2="774" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F2FAF9"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="594" y1="274" x2="638" y2="750" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12E4D0"/>
+      <stop offset="1" stop-color="#2398FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="192" fill="url(#tile)"/>
+  <rect x="96" y="96" width="832" height="832" rx="192" stroke="#DDEBE9" stroke-width="8"/>
+
+  <rect x="282" y="466" width="44" height="92" rx="22" fill="#CBD8DB"/>
+  <rect x="360" y="412" width="44" height="200" rx="22" fill="#566E79"/>
+  <rect x="438" y="346" width="44" height="332" rx="22" fill="#435B68"/>
+  <rect x="516" y="390" width="44" height="244" rx="22" fill="#566E79"/>
+  <rect x="594" y="274" width="44" height="476" rx="22" fill="url(#accent)"/>
+  <rect x="672" y="424" width="44" height="176" rx="22" fill="#B9C9CD"/>
+  <circle cx="772" cy="512" r="22" fill="#CBD8DB"/>
+</svg>

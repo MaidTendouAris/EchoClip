@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+.vscode
+target
+apps
+docs
+icon
+scripts
+third_party
+*.hprof

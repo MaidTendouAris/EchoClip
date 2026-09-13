@@ -1,0 +1,25 @@
+services:
+  echoclip-server:
+    build:
+      context: ../..
+      dockerfile: deploy/server/Dockerfile
+    image: echoclip-server:local
+    container_name: echoclip-server
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./server.toml:/etc/echoclip/server.toml:ro
+      - echoclip-data:/var/lib/echoclip
+      - echoclip-secrets:/var/lib/echoclip-secrets
+
+volumes:
+  echoclip-data:
+  echoclip-secrets:

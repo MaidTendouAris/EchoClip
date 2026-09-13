@@ -71,7 +71,7 @@ enum LockRecordingTrigger {
 enum AppSection {
   recorder(Icons.home_outlined),
   library(Icons.library_music),
-  processing(Icons.equalizer),
+  scheduledTasks(Icons.schedule_outlined),
   settings(Icons.tune);
 
   const AppSection(this.icon);
@@ -120,86 +120,6 @@ class MeterSnapshot {
 }
 
 enum SaveDurationMode { preset, custom }
-
-class _SaveSecondsField extends StatefulWidget {
-  const _SaveSecondsField({required this.seconds, required this.onChanged});
-
-  final int seconds;
-  final ValueChanged<int> onChanged;
-
-  @override
-  State<_SaveSecondsField> createState() => _SaveSecondsFieldState();
-}
-
-class _SaveSecondsFieldState extends State<_SaveSecondsField> {
-  late final TextEditingController _controller;
-  late final FocusNode _focusNode;
-
-  int get _seconds => widget.seconds.clamp(1, 86400).toInt();
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: _seconds.toString());
-    _focusNode = FocusNode()..addListener(_handleFocusChange);
-  }
-
-  @override
-  void didUpdateWidget(covariant _SaveSecondsField oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.seconds != widget.seconds && !_focusNode.hasFocus) {
-      _controller.text = _seconds.toString();
-    }
-  }
-
-  @override
-  void dispose() {
-    _focusNode.removeListener(_handleFocusChange);
-    _focusNode.dispose();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _handleFocusChange() {
-    if (!_focusNode.hasFocus) {
-      _applyValue();
-    }
-  }
-
-  void _applyValue() {
-    final parsed = int.tryParse(_controller.text.trim()) ?? _seconds;
-    final seconds = parsed.clamp(1, 86400).toInt();
-    _controller.text = seconds.toString();
-    if (seconds != _seconds) {
-      widget.onChanged(seconds);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    return SizedBox(
-      width: 184,
-      child: TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        keyboardType: TextInputType.number,
-        textInputAction: TextInputAction.done,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        onSubmitted: (_) => _applyValue(),
-        decoration: InputDecoration(
-          labelText: l10n.customSaveSeconds,
-          helperText: l10n.customSaveSecondsHelper,
-          suffixText: l10n.secondsUnit,
-          prefixIcon: const Icon(Icons.timer_outlined),
-          border: const OutlineInputBorder(
-            borderRadius: BorderRadius.all(Radius.circular(28)),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 class SaveDurationOption {
   const SaveDurationOption(this.seconds);

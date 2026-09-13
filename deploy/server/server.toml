@@ -1,0 +1,31 @@
+[server]
+data_dir = "/var/lib/echoclip"
+log_level = "info"
+
+[upload]
+bind = "0.0.0.0:32581"
+key_file = "/var/lib/echoclip-secrets/upload.key"
+max_envelope_bytes = 262144
+challenge_ttl_seconds = 30
+epoch_idle_seconds = 300
+max_pending_challenges = 4096
+max_connections_per_ip = 8
+max_requests_per_minute_per_ip = 3600
+max_active_streams = 128
+max_replay_seconds = 86400
+
+[webui]
+bind = "0.0.0.0:32580"
+allow_public = false
+allowed_cidrs = [
+  "127.0.0.0/8",
+  "::1/128",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "fc00::/7",
+]
+
+[recording]
+segment_seconds = 60
+buffer_seconds = 86400
