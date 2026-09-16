@@ -256,7 +256,7 @@ class _ScheduledTasksPageState extends State<ScheduledTasksPage> {
                     : (enabled) =>
                           unawaited(widget.onSetEnabled(task, enabled)),
               ),
-              PopupMenuButton<String>(
+              AppMenuButton<String>(
                 enabled: !widget.busy,
                 icon: const Icon(Icons.more_horiz, color: Color(0xFF7B8F83)),
                 onSelected: (value) {
@@ -267,8 +267,8 @@ class _ScheduledTasksPageState extends State<ScheduledTasksPage> {
                   }
                 },
                 itemBuilder: (_) => [
-                  PopupMenuItem(value: 'edit', child: Text(l10n.edit)),
-                  PopupMenuItem(value: 'delete', child: Text(l10n.delete)),
+                  AppMenuItem(value: 'edit', child: Text(l10n.edit)),
+                  AppMenuItem(value: 'delete', child: Text(l10n.delete)),
                 ],
               ),
             ],
@@ -471,12 +471,14 @@ class ScheduledTaskEditorPage extends StatefulWidget {
     this.task,
     this.preset,
     this.presetCount = 0,
+    this.startupMode = false,
     required this.onSubmit,
   });
 
   final ScheduledTaskModel? task;
   final SchedulePresetModel? preset;
   final int presetCount;
+  final bool startupMode;
   final Future<bool> Function(Map<String, Object?> task) onSubmit;
 
   @override
@@ -510,7 +512,11 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
   void initState() {
     super.initState();
     final task = widget.task;
-    _nameController = TextEditingController(text: task?.name ?? '');
+    _nameController = TextEditingController(
+      text:
+          task?.name ?? (widget.startupMode ? widget.preset?.name : null) ?? '',
+    );
+    if (widget.startupMode) _countdownMinutes = 0;
     _saveSecondsController = TextEditingController(text: '30');
     _timePoint = DateTime(
       _timePoint.year,
@@ -578,7 +584,9 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
           _saveRecent = true;
           _saveSecondsController.text =
               (action['seconds'] as num?)?.toInt().toString() ?? '30';
-          _format = action['format']?.toString() == 'wav' ? 'wav' : 'mp3';
+          _format = recordingExportFormats.contains(action['format'])
+              ? action['format'].toString()
+              : 'mp3';
           _bitrate = (action['mp3BitrateKbps'] as num?)?.toInt() ?? 128;
           _allowPartial = action['allowPartial'] != false;
           break;
@@ -647,30 +655,34 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
                   ),
                   const SizedBox(height: 16),
                   _EditorSection(
-                    title: l10n.scheduleRunTime,
+                    title: widget.startupMode
+                        ? l10n.startupDelay
+                        : l10n.scheduleRunTime,
                     icon: Icons.schedule,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SegmentedButton<_ScheduleTriggerChoice>(
-                          segments: [
-                            ButtonSegment(
-                              value: _ScheduleTriggerChoice.countdown,
-                              icon: const Icon(Icons.timer_outlined),
-                              label: Text(l10n.scheduleCountdown),
-                            ),
-                            ButtonSegment(
-                              value: _ScheduleTriggerChoice.timePoint,
-                              icon: const Icon(Icons.event_outlined),
-                              label: Text(l10n.scheduleTimePoint),
-                            ),
-                          ],
-                          selected: {_trigger},
-                          onSelectionChanged: _saving
-                              ? null
-                              : (values) =>
-                                    setState(() => _trigger = values.first),
-                        ),
+                        if (widget.startupMode) Text(l10n.startupDelayHelp),
+                        if (!widget.startupMode)
+                          SegmentedButton<_ScheduleTriggerChoice>(
+                            segments: [
+                              ButtonSegment(
+                                value: _ScheduleTriggerChoice.countdown,
+                                icon: const Icon(Icons.timer_outlined),
+                                label: Text(l10n.scheduleCountdown),
+                              ),
+                              ButtonSegment(
+                                value: _ScheduleTriggerChoice.timePoint,
+                                icon: const Icon(Icons.event_outlined),
+                                label: Text(l10n.scheduleTimePoint),
+                              ),
+                            ],
+                            selected: {_trigger},
+                            onSelectionChanged: _saving
+                                ? null
+                                : (values) =>
+                                      setState(() => _trigger = values.first),
+                          ),
                         const SizedBox(height: 20),
                         if (_trigger == _ScheduleTriggerChoice.countdown)
                           _TimeWheelPicker(
@@ -788,22 +800,26 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
                                       ),
                                     );
                                     final formatField =
-                                        DropdownButtonFormField<String>(
+                                        AppDropdownField<String>(
                                           isExpanded: true,
                                           initialValue: _format,
                                           decoration: InputDecoration(
                                             labelText: l10n.outputFormat,
+                                            helperText: _format == "wav"
+                                                ? l10n.wavSaveLimit
+                                                : null,
+                                            helperMaxLines: 4,
                                             border: const OutlineInputBorder(),
                                           ),
-                                          items: const [
-                                            DropdownMenuItem(
-                                              value: 'mp3',
-                                              child: Text('MP3'),
-                                            ),
-                                            DropdownMenuItem(
-                                              value: 'wav',
-                                              child: Text('WAV'),
-                                            ),
+                                          items: [
+                                            for (final format
+                                                in recordingExportFormats)
+                                              DropdownMenuItem(
+                                                value: format,
+                                                child: Text(
+                                                  format.toUpperCase(),
+                                                ),
+                                              ),
                                           ],
                                           onChanged: _saving || !_saveRecent
                                               ? null
@@ -832,7 +848,7 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
                                 ),
                                 if (_format == 'mp3') ...[
                                   const SizedBox(height: 12),
-                                  DropdownButtonFormField<int>(
+                                  AppDropdownField<int>(
                                     isExpanded: true,
                                     initialValue: _bitrate,
                                     decoration: InputDecoration(
@@ -903,19 +919,20 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
                   onPressed: _saving ? null : () => Navigator.of(context).pop(),
                   child: Text(l10n.cancel),
                 ),
-                Tooltip(
-                  message: widget.presetCount >= 9
-                      ? l10n.schedulePresetLimit
-                      : l10n.saveSchedulePreset,
-                  child: OutlinedButton.icon(
-                    key: const ValueKey('schedule.savePreset'),
-                    onPressed: _saving || widget.presetCount >= 9
-                        ? null
-                        : () => _submit(asPreset: true),
-                    icon: const Icon(Icons.bookmark_add_outlined),
-                    label: Text(l10n.saveSchedulePreset),
+                if (!widget.startupMode)
+                  Tooltip(
+                    message: widget.presetCount >= 9
+                        ? l10n.schedulePresetLimit
+                        : l10n.saveSchedulePreset,
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('schedule.savePreset'),
+                      onPressed: _saving || widget.presetCount >= 9
+                          ? null
+                          : () => _submit(asPreset: true),
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      label: Text(l10n.saveSchedulePreset),
+                    ),
                   ),
-                ),
                 FilledButton.icon(
                   onPressed: _saving ? null : _submit,
                   icon: _saving
@@ -998,6 +1015,7 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
       return;
     }
     final task = <String, Object?>{
+      if (widget.startupMode && widget.preset != null) 'id': widget.preset!.id,
       if (!asPreset && widget.task != null) 'id': widget.task!.id,
       if (!asPreset && widget.task != null)
         'expectedRevision': widget.task!.revision,
@@ -1059,7 +1077,8 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
     if (actions.isEmpty) {
       return l10n.scheduleActionRequired;
     }
-    if (trigger['type'] == 'countdown' &&
+    if (!widget.startupMode &&
+        trigger['type'] == 'countdown' &&
         (trigger['delayMillis'] as int) <= 0) {
       return l10n.scheduleCountdownRequired;
     }
@@ -1067,6 +1086,9 @@ class ScheduledTaskEditorPageState extends State<ScheduledTaskEditorPage> {
         trigger['type'] == 'time_point' &&
         !_timePoint.isAfter(DateTime.now())) {
       return l10n.scheduleTimePointPast;
+    }
+    if (_saveRecent && _format == 'wav' && saveSeconds > 14400) {
+      return l10n.wavSaveLimit;
     }
     if (_saveRecent && (saveSeconds < 1 || saveSeconds > 86400)) {
       return l10n.scheduleSaveDurationInvalid;

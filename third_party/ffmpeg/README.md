@@ -112,3 +112,7 @@ The output is `third_party/ffmpeg/out/windows/x64/ffmpeg.exe`. The Windows
 Flutter CMake install step copies it beside `echoclip.exe`, where the shared
 frontend's Windows service resolves it. `scripts/build_windows_package.ps1`
 invokes this build automatically and packages the applicable license texts.
+
+## Save formats (EchoClip 0.8.0)
+
+Both builds include MP3/LAME, FLAC, WAV/PCM, M4A/AAC, AAC/ADTS and OGG/Vorbis output. OGG uses FFmpeg's built-in Vorbis encoder (experimental codec flag, stereo output) and includes its decoder/demuxer for verification; no additional external codec library is linked. The app converts mono input to stereo for this encoder. Save format is selected in app settings; WAV is limited to four hours and the RIFF size limit.

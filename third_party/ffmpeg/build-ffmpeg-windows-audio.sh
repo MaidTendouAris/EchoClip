@@ -79,12 +79,14 @@ cd "$BUILD_ROOT/ffmpeg"
   --enable-encoder=libmp3lame \
   --enable-encoder=aac \
   --enable-encoder=flac \
+  --enable-encoder=vorbis \
   --enable-encoder=pcm_s16le \
   --enable-encoder=pcm_s24le \
   --disable-decoders \
   --enable-decoder=mp3 \
   --enable-decoder=aac \
   --enable-decoder=flac \
+  --enable-decoder=vorbis \
   --enable-decoder=pcm_s16le \
   --enable-decoder=pcm_s24le \
   --disable-muxers \
@@ -92,6 +94,7 @@ cd "$BUILD_ROOT/ffmpeg"
   --enable-muxer=wav \
   --enable-muxer=adts \
   --enable-muxer=flac \
+  --enable-muxer=ogg \
   --enable-muxer=mp4 \
   --enable-muxer=ipod \
   --disable-demuxers \
@@ -101,6 +104,7 @@ cd "$BUILD_ROOT/ffmpeg"
   --enable-demuxer=mp3 \
   --enable-demuxer=aac \
   --enable-demuxer=flac \
+  --enable-demuxer=ogg \
   --enable-demuxer=mov \
   --disable-parsers \
   --enable-parser=mpegaudio \

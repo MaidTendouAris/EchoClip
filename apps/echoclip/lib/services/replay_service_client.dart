@@ -10,6 +10,53 @@ class ReplayServiceClient {
   static bool get _usesWindowsBackend =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
+  Future<Map<dynamic, dynamic>> getAppVersion() async =>
+      await const MethodChannel(
+        'com.echoclip/app_info',
+      ).invokeMapMethod<dynamic, dynamic>('getAppVersion') ??
+      const {};
+
+  Future<String> getExportFormat() async {
+    final value = (await _map('getExportSettings'))['format'];
+    return recordingExportFormats.contains(value) ? value as String : 'mp3';
+  }
+
+  Future<String> setExportFormat(String format) async {
+    final response = await _map('setExportSettings', {'format': format});
+    if (response['ok'] == false || response['error'] != null) {
+      throw PlatformException(
+        code: response['error']?.toString() ?? 'export_settings_failed',
+      );
+    }
+    return response['format']?.toString() ?? format;
+  }
+
+  Future<ScheduleSnapshot> setStartupSilent(bool silent) async =>
+      ScheduleSnapshot.fromNative(
+        await _map('setStartupSilent', {'silent': silent}),
+      );
+
+  Future<Map<dynamic, dynamic>> getAudioGains() => _map('getAudioGains');
+  Future<Map<dynamic, dynamic>> setAudioGain(String source, int percent) =>
+      _map('setAudioGains', {source: percent});
+  Future<BufferWindow> getBufferWindow() async =>
+      BufferWindow.fromNative(await _map('getBufferWindow'));
+  Future<SaveClipResult> saveBufferRange(BufferSelection range) async =>
+      SaveClipResult.fromNative(
+        await _map('saveBufferRange', {
+          'range': range.toMap(),
+          'seconds': range.duration.ceil(),
+        }),
+      );
+  Future<ScheduleSnapshot> getStartupSettings() async =>
+      ScheduleSnapshot.fromNative(await _map('getStartupSettings'));
+  Future<ScheduleSnapshot> setStartupEnabled(bool enabled) async =>
+      ScheduleSnapshot.fromNative(
+        await _map('setStartupEnabled', {'enabled': enabled}),
+      );
+  Future<ScheduleSnapshot> consumeStartupTasks() async =>
+      ScheduleSnapshot.fromNative(await _map('consumeStartupTasks'));
+
   Future<UiLanguageMode> getUiLanguageMode() async {
     final response = await _map('getUiLanguageMode');
     return UiLanguageMode.fromStorageValue(response['mode']?.toString());
@@ -360,6 +407,12 @@ class ScheduleSnapshot {
     required this.ok,
     required this.tasks,
     this.presets = const [],
+    this.startupEnabled = false,
+    this.startupSupported = true,
+    this.startupSilent = false,
+    this.startupRecordingEnabled = false,
+    this.startupUploadEnabled = false,
+    this.startupTasks = const [],
     required this.history,
     required this.nextWakeup,
     required this.schedulingPrecision,
@@ -378,6 +431,17 @@ class ScheduleSnapshot {
     final nextWakeup = value['nextWakeupUtcMillis'];
     return ScheduleSnapshot(
       ok: value['ok'] != false && value['error'] == null,
+      startupEnabled: value['startupEnabled'] == true,
+      startupSupported: value['startupSupported'] != false,
+      startupSilent: value['startupSilent'] == true,
+      startupRecordingEnabled:
+          (value['startupActions'] as Map?)?['recordingEnabled'] == true,
+      startupUploadEnabled:
+          (value['startupActions'] as Map?)?['uploadEnabled'] == true,
+      startupTasks: (value['startupTasks'] as List? ?? [])
+          .whereType<Map>()
+          .map(SchedulePresetModel.fromNative)
+          .toList(),
       tasks: taskValues is List
           ? taskValues
                 .whereType<Map>()
@@ -416,6 +480,12 @@ class ScheduleSnapshot {
   final bool ok;
   final List<ScheduledTaskModel> tasks;
   final List<SchedulePresetModel> presets;
+  final bool startupEnabled;
+  final bool startupSupported;
+  final bool startupSilent;
+  final bool startupRecordingEnabled;
+  final bool startupUploadEnabled;
+  final List<SchedulePresetModel> startupTasks;
   final List<ScheduledExecutionModel> history;
   final DateTime? nextWakeup;
   final String schedulingPrecision;
@@ -1203,4 +1273,72 @@ class CacheStatus {
 
   final bool ok;
   final int cacheBytes;
+}
+
+class BufferWindow {
+  const BufferWindow({
+    required this.bufferId,
+    required this.sampleRate,
+    required this.channels,
+    required this.startSample,
+    required this.endSample,
+  });
+  factory BufferWindow.fromNative(Map<dynamic, dynamic> data) {
+    final window = BufferWindow(
+      bufferId: data['bufferId'] as String? ?? '',
+      sampleRate: (data['sampleRate'] as num? ?? 0).toInt(),
+      channels: (data['channels'] as num? ?? 0).toInt(),
+      startSample: (data['startSample'] as num? ?? 0).toInt(),
+      endSample: (data['endSample'] as num? ?? 0).toInt(),
+    );
+    if (window.bufferId.isEmpty ||
+        window.sampleRate <= 0 ||
+        window.channels <= 0 ||
+        window.endSample < window.startSample) {
+      throw const FormatException('buffer_unavailable');
+    }
+    return window;
+  }
+  final String bufferId;
+  final int sampleRate, channels, startSample, endSample;
+  double get duration => (endSample - startSample) / (sampleRate * channels);
+  BufferSelection select(double start, double end) {
+    if (!start.isFinite ||
+        !end.isFinite ||
+        start != start.truncateToDouble() ||
+        end != end.truncateToDouble() ||
+        start < 0 ||
+        end > duration ||
+        start >= end) {
+      throw const FormatException('BUFFER_RANGE_INVALID');
+    }
+    final first = startSample + (start * sampleRate).round() * channels;
+    final last = math.min(
+      endSample,
+      startSample + (end * sampleRate).round() * channels,
+    );
+    if (first >= last) throw const FormatException('BUFFER_RANGE_INVALID');
+    return BufferSelection(window: this, startSample: first, endSample: last);
+  }
+}
+
+class BufferSelection {
+  const BufferSelection({
+    required this.window,
+    required this.startSample,
+    required this.endSample,
+  });
+  final BufferWindow window;
+  final int startSample, endSample;
+  double get start =>
+      (startSample - window.startSample) /
+      (window.sampleRate * window.channels);
+  double get end =>
+      (endSample - window.startSample) / (window.sampleRate * window.channels);
+  double get duration => end - start;
+  Map<String, Object?> toMap() => {
+    'bufferId': window.bufferId,
+    'startSample': startSample,
+    'endSample': endSample,
+  };
 }

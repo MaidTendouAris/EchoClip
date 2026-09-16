@@ -340,13 +340,46 @@ impl SegmentInfo {
 pub enum ExportFormat {
     Wav,
     Mp3,
+    Flac,
+    Ogg,
+    M4a,
+    Aac,
 }
 
 impl ExportFormat {
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "wav" => Some(Self::Wav),
+            "mp3" => Some(Self::Mp3),
+            "flac" => Some(Self::Flac),
+            "ogg" => Some(Self::Ogg),
+            "m4a" => Some(Self::M4a),
+            "aac" => Some(Self::Aac),
+            _ => None,
+        }
+    }
+
+    pub fn validate_samples(self, samples: u64, audio: AudioConfig) -> Result<(), EchoCoreError> {
+        if self == Self::Wav {
+            if samples > audio.samples_for_seconds_u64(4 * 60 * 60) {
+                return Err(EchoCoreError::InvalidConfig("wav_duration_limit_4_hours"));
+            }
+            let bytes = AudioConfig::bytes_for_samples(samples);
+            if bytes > (u32::MAX - 36) as u64 {
+                return Err(EchoCoreError::ExportTooLargeForWav { bytes });
+            }
+        }
+        Ok(())
+    }
+
     pub fn extension(self) -> &'static str {
         match self {
             Self::Wav => "wav",
             Self::Mp3 => "mp3",
+            Self::Flac => "flac",
+            Self::Ogg => "ogg",
+            Self::M4a => "m4a",
+            Self::Aac => "aac",
         }
     }
 }
@@ -390,6 +423,8 @@ impl Default for ExportOptions {
 pub struct RecorderManifest {
     pub format_version: u32,
     pub session_id: String,
+    #[serde(default)]
+    pub timeline_id: String,
     pub created_unix_millis: u128,
     pub audio: AudioConfig,
     pub sample_format: String,
@@ -403,6 +438,7 @@ impl RecorderManifest {
     fn new(config: &CoreConfig, session_id: String) -> Self {
         Self {
             session_id,
+            timeline_id: new_timeline_id(),
             format_version: 1,
             created_unix_millis: unix_millis_now(),
             audio: config.audio,
@@ -430,6 +466,7 @@ pub struct SegmentedRecorder {
     manifest_path: PathBuf,
     manifest: RecorderManifest,
     current_file: Option<BufWriter<File>>,
+    retained_pcm_bytes: u64,
     manifest_dirty: bool,
     last_manifest_persist: Instant,
     recovered: bool,
@@ -453,6 +490,7 @@ impl SegmentedRecorder {
             manifest_path,
             manifest,
             current_file: None,
+            retained_pcm_bytes: 0,
             manifest_dirty: false,
             last_manifest_persist: Instant::now(),
             recovered: false,
@@ -487,6 +525,8 @@ impl SegmentedRecorder {
             recovery_warnings.push("manifest_missing_reconstructed".to_string());
             reconstruct_manifest_from_pcm(&config, &session_dir)?
         };
+        let mut timeline_changed =
+            manifest.timeline_id.is_empty() || manifest.audio != config.audio;
         manifest.audio = config.audio;
         manifest.segment_seconds = config.segment_seconds;
         manifest.max_replay_seconds = config.max_replay_seconds;
@@ -510,6 +550,7 @@ impl SegmentedRecorder {
                     segment.complete = true;
                 }
                 if segment.sample_count != actual_samples {
+                    timeline_changed = true;
                     recovery_warnings.push(format!(
                         "repaired_sample_count:{}:{}->{}",
                         segment.file_name, segment.sample_count, actual_samples
@@ -531,11 +572,15 @@ impl SegmentedRecorder {
         retained_segments.sort_by_key(|segment| segment.index);
         let mut next_start = 0;
         for segment in &mut retained_segments {
+            timeline_changed |= segment.start_sample != next_start;
             segment.start_sample = next_start;
             next_start += segment.sample_count;
         }
         manifest.segments = retained_segments;
         manifest.total_samples_written = next_start;
+        if timeline_changed {
+            manifest.timeline_id = new_timeline_id();
+        }
 
         let mut recorder = Self {
             config,
@@ -543,6 +588,7 @@ impl SegmentedRecorder {
             manifest_path,
             manifest,
             current_file: None,
+            retained_pcm_bytes: AudioConfig::bytes_for_samples(next_start),
             manifest_dirty: true,
             last_manifest_persist: Instant::now(),
             recovered: true,
@@ -595,13 +641,11 @@ impl SegmentedRecorder {
             .saturating_sub(retained_start)
     }
 
+    /// Retained PCM payload, including buffered writes and export-pinned segments.
+    /// Recovery reconciles this counter with disk once; live status reads never
+    /// scan segment files or wait for filesystem metadata.
     pub fn temp_bytes(&self) -> u64 {
-        self.manifest
-            .segments
-            .iter()
-            .filter_map(|segment| fs::metadata(self.session_dir.join(&segment.file_name)).ok())
-            .map(|metadata| metadata.len())
-            .sum()
+        self.retained_pcm_bytes
     }
 
     pub fn push_samples(&mut self, samples: &[i16]) -> Result<(), EchoCoreError> {
@@ -688,6 +732,7 @@ impl SegmentedRecorder {
         }
 
         let sample_count = end - start;
+        ExportFormat::Wav.validate_samples(sample_count, self.config.audio)?;
         let data_bytes = AudioConfig::bytes_for_samples(sample_count);
         if data_bytes > (u32::MAX - 36) as u64 {
             return Err(EchoCoreError::ExportTooLargeForWav { bytes: data_bytes });
@@ -762,6 +807,7 @@ impl SegmentedRecorder {
             .expect("current segment metadata exists");
         segment.sample_count += samples.len() as u64;
         self.manifest.total_samples_written += samples.len() as u64;
+        self.retained_pcm_bytes += AudioConfig::bytes_for_samples(samples.len() as u64);
         self.mark_manifest_dirty();
         Ok(())
     }
@@ -796,34 +842,55 @@ impl SegmentedRecorder {
         self.trim_expired_segments_except(&HashSet::new())
     }
 
+    fn has_expired_segments(&self) -> bool {
+        self.manifest
+            .segments
+            .first()
+            .is_some_and(|segment| segment.end_sample() <= self.retained_start_sample())
+    }
+
     fn trim_expired_segments_except(
         &mut self,
         pinned_files: &HashSet<String>,
     ) -> Result<(), EchoCoreError> {
-        let retained_start = self.retained_start_sample();
-        let mut retained = Vec::with_capacity(self.manifest.segments.len());
-        let mut removed_any = false;
-
-        for segment in self.manifest.segments.drain(..) {
-            if segment.end_sample() <= retained_start && !pinned_files.contains(&segment.file_name)
-            {
-                removed_any = true;
-                let path = self.session_dir.join(&segment.file_name);
-                match fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(EchoCoreError::Io(error)),
-                }
-            } else {
-                retained.push(segment);
-            }
+        // Usually called for every audio callback, while a segment expires only
+        // once per minute. Keep that fast path independent of recording length.
+        if !self.has_expired_segments() {
+            return Ok(());
         }
-
+        let retained_start = self.retained_start_sample();
+        let mut removed_bytes = 0;
+        let mut removed_any = false;
+        let mut trim_error = None;
+        self.manifest.segments.retain(|segment| {
+            if trim_error.is_some()
+                || segment.end_sample() > retained_start
+                || pinned_files.contains(&segment.file_name)
+            {
+                return true;
+            }
+            match fs::remove_file(self.session_dir.join(&segment.file_name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    // Keep the failed segment and remaining metadata intact so
+                    // a transient file lock can be retried without losing audio.
+                    trim_error = Some(error);
+                    return true;
+                }
+            }
+            removed_bytes += AudioConfig::bytes_for_samples(segment.sample_count);
+            removed_any = true;
+            false
+        });
+        self.retained_pcm_bytes -= removed_bytes;
         if removed_any {
             self.mark_manifest_dirty();
         }
-        self.manifest.segments = retained;
-        Ok(())
+        match trim_error {
+            Some(error) => Err(EchoCoreError::Io(error)),
+            None => Ok(()),
+        }
     }
 
     fn retained_start_sample(&self) -> u64 {
@@ -831,9 +898,36 @@ impl SegmentedRecorder {
             .config
             .audio
             .samples_for_seconds_u64(self.config.max_replay_seconds);
-        self.manifest
-            .total_samples_written
-            .saturating_sub(max_samples)
+        let end = self.manifest.total_samples_written;
+        let segments = &self.manifest.segments;
+        let Some(first) = segments.first() else {
+            return end;
+        };
+        if end < max_samples {
+            return first.start_sample;
+        }
+
+        // Expire the whole segment that meets the rolling boundary, including
+        // equality: a 30-minute cache becomes 29 minutes as minute 30 arrives.
+        // Search metadata only; pinned export files may remain on disk but are
+        // outside the live buffer and must never inflate its reported duration.
+        let cutoff = end - max_samples;
+        let index = segments.partition_point(|segment| segment.start_sample <= cutoff);
+        if index == 0 {
+            return first.start_sample;
+        }
+        let segment = &segments[index - 1];
+        if segment.end_sample() <= cutoff {
+            // A pinned export may leave an old file before a gap. Do not count
+            // the removed files in that gap as live audio after trimming.
+            return segments.get(index).map_or(end, |next| next.start_sample);
+        }
+        if !segment.complete && self.current_file.is_some() {
+            // Core callers may use a capacity smaller than one segment. Never
+            // delete their active writer; the app uses at least five segments.
+            return cutoff;
+        }
+        segment.end_sample()
     }
 
     fn segments_overlapping(&self, start: u64, end: u64) -> impl Iterator<Item = &SegmentInfo> {
@@ -1042,13 +1136,12 @@ impl RecorderSnapshot {
         }
 
         let sample_count = end - start;
+        options.format.validate_samples(sample_count, self.audio)?;
         match options.format {
-            ExportFormat::Wav => {
+            ExportFormat::Wav if options.ffmpeg_path.is_none() => {
                 self.export_range_wav(start, end, sample_count, output_path, cancel_flag)?
             }
-            ExportFormat::Mp3 => {
-                self.export_range_mp3(start, end, output_path, options, cancel_flag)?
-            }
+            _ => self.export_range_ffmpeg(start, end, output_path, options, cancel_flag)?,
         }
         Ok(sample_count)
     }
@@ -1073,7 +1166,7 @@ impl RecorderSnapshot {
         Ok(())
     }
 
-    fn export_range_mp3(
+    fn export_range_ffmpeg(
         &self,
         start: u64,
         end: u64,
@@ -1106,11 +1199,41 @@ impl RecorderSnapshot {
             .arg(self.audio.channels.to_string())
             .arg("-i")
             .arg("pipe:0")
-            .arg("-vn")
-            .arg("-codec:a")
-            .arg("libmp3lame")
-            .arg("-b:a")
-            .arg(bitrate)
+            .arg("-vn");
+        match options.format {
+            ExportFormat::Mp3 => {
+                command.args(["-c:a", "libmp3lame", "-b:a", &bitrate, "-f", "mp3"]);
+            }
+            ExportFormat::Wav => {
+                command.args(["-c:a", "pcm_s16le", "-rf64", "never", "-f", "wav"]);
+            }
+            ExportFormat::Flac => {
+                command.args(["-c:a", "flac", "-f", "flac"]);
+            }
+            // FFmpeg's built-in Vorbis encoder accepts stereo; duplicate mono
+            // through the resampler rather than requiring an external library.
+            ExportFormat::Ogg => {
+                command.args([
+                    "-c:a",
+                    "vorbis",
+                    "-strict",
+                    "experimental",
+                    "-ac",
+                    "2",
+                    "-q:a",
+                    "4",
+                    "-f",
+                    "ogg",
+                ]);
+            }
+            ExportFormat::M4a => {
+                command.args(["-c:a", "aac", "-b:a", &bitrate, "-f", "ipod"]);
+            }
+            ExportFormat::Aac => {
+                command.args(["-c:a", "aac", "-b:a", &bitrate, "-f", "adts"]);
+            }
+        }
+        command
             .arg("-y")
             .arg(output_path)
             .stdin(Stdio::piped())
@@ -1278,6 +1401,7 @@ pub struct RecorderSampleBounds {
 struct SharedWorkerStatus {
     running: bool,
     session_id: String,
+    timeline_id: String,
     sample_rate: u32,
     channels: u16,
     available_millis: u64,
@@ -1303,6 +1427,7 @@ impl SharedWorkerStatus {
         Self {
             running: true,
             session_id,
+            timeline_id: String::new(),
             sample_rate: audio.sample_rate,
             channels: audio.channels,
             available_millis: 0,
@@ -1348,11 +1473,32 @@ impl SharedWorkerStatus {
     }
 }
 
+/// Fixed coordinates for an export selection. A new timeline rejects selections
+/// made before cache replacement or recovery that changed sample coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BufferWindow {
+    pub buffer_id: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub start_sample: u64,
+    pub end_sample: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRange {
+    pub buffer_id: String,
+    pub start_sample: u64,
+    pub end_sample: u64,
+}
+
 enum RecorderCommand {
     Push(Vec<i16>),
     SaveLatest {
         id: u64,
         seconds: u32,
+        range: Option<ExportRange>,
         output_path: PathBuf,
         options: ExportOptions,
     },
@@ -1505,18 +1651,21 @@ impl RecorderWorker {
             return Err(EchoCoreError::WorkerStopped);
         }
         let chunk = samples.to_vec();
+        // Publish the count before the worker can receive and subtract it.
+        self.queued_chunks.fetch_add(1, Ordering::Relaxed);
         match self.sender.try_send(RecorderCommand::Push(chunk)) {
-            Ok(()) => {
-                self.queued_chunks.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
+                self.queued_chunks.fetch_sub(1, Ordering::Relaxed);
                 let dropped = self.increment_dropped_chunks();
                 Err(EchoCoreError::QueueFull {
                     dropped_chunks: dropped,
                 })
             }
-            Err(TrySendError::Disconnected(_)) => Err(EchoCoreError::QueueClosed),
+            Err(TrySendError::Disconnected(_)) => {
+                self.queued_chunks.fetch_sub(1, Ordering::Relaxed);
+                Err(EchoCoreError::QueueClosed)
+            }
         }
     }
 
@@ -1534,12 +1683,58 @@ impl RecorderWorker {
         output_path: impl Into<PathBuf>,
         options: ExportOptions,
     ) -> Result<u64, EchoCoreError> {
+        self.enqueue_export(seconds, None, output_path.into(), options)
+    }
+
+    pub fn buffer_window(&self) -> BufferWindow {
+        let status = self.status.lock().expect("status lock");
+        BufferWindow {
+            buffer_id: status.timeline_id.clone(),
+            sample_rate: status.sample_rate,
+            channels: status.channels,
+            start_sample: status.retained_start_sample,
+            end_sample: status.total_samples_written,
+        }
+    }
+
+    pub fn save_range_async(
+        &self,
+        range: ExportRange,
+        output_path: impl Into<PathBuf>,
+        options: ExportOptions,
+    ) -> Result<u64, EchoCoreError> {
+        let window = self.buffer_window();
+        if range.buffer_id != window.buffer_id {
+            return Err(EchoCoreError::InvalidConfig("BUFFER_RANGE_EXPIRED"));
+        }
+        if range.end_sample <= range.start_sample
+            || range.start_sample % u64::from(window.channels) != 0
+            || range.end_sample % u64::from(window.channels) != 0
+        {
+            return Err(EchoCoreError::InvalidConfig("BUFFER_RANGE_INVALID"));
+        }
+        let seconds = (range.end_sample - range.start_sample)
+            .div_ceil(u64::from(window.sample_rate) * u64::from(window.channels));
+        self.enqueue_export(
+            seconds.min(u32::MAX as u64) as u32,
+            Some(range),
+            output_path.into(),
+            options,
+        )
+    }
+
+    fn enqueue_export(
+        &self,
+        seconds: u32,
+        range: Option<ExportRange>,
+        output_path: PathBuf,
+        options: ExportOptions,
+    ) -> Result<u64, EchoCoreError> {
         if self.stopped.load(Ordering::Relaxed) {
             return Err(EchoCoreError::WorkerStopped);
         }
 
         let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
-        let output_path = output_path.into();
         let format = options.format;
         self.cancel_flags
             .lock()
@@ -1558,6 +1753,7 @@ impl RecorderWorker {
             .send(RecorderCommand::SaveLatest {
                 id,
                 seconds,
+                range,
                 output_path,
                 options,
             })
@@ -1679,8 +1875,11 @@ fn recorder_worker_loop(
                 queued_chunks.fetch_sub(1, Ordering::Relaxed);
                 let start_sample = recorder.manifest.total_samples_written;
                 let result = recorder.push_samples_defer_trim(&samples).and_then(|()| {
-                    let pinned = pinned_file_set(&pinned_segments);
-                    recorder.trim_expired_segments_except(&pinned)
+                    if recorder.has_expired_segments() {
+                        let pinned = pinned_file_set(&pinned_segments);
+                        recorder.trim_expired_segments_except(&pinned)?;
+                    }
+                    Ok(())
                 });
                 if result.is_ok() {
                     let event = PcmCommitted {
@@ -1708,10 +1907,25 @@ fn recorder_worker_loop(
             RecorderCommand::SaveLatest {
                 id,
                 seconds,
+                range,
                 output_path,
                 options,
             } => {
-                let snapshot = recorder.snapshot();
+                let snapshot = recorder.snapshot().and_then(|mut snapshot| {
+                    if let Some(range) = &range {
+                        if range.buffer_id != recorder.manifest.timeline_id
+                            || range.start_sample < snapshot.retained_start_sample
+                            || range.end_sample > snapshot.total_samples_written
+                        {
+                            return Err(EchoCoreError::InvalidConfig("BUFFER_RANGE_EXPIRED"));
+                        }
+                        snapshot.segments.retain(|segment| {
+                            segment.start_sample < range.end_sample
+                                && segment.end_sample() > range.start_sample
+                        });
+                    }
+                    Ok(snapshot)
+                });
                 if let Ok(snapshot) = &snapshot {
                     pin_snapshot_segments(&pinned_segments, snapshot);
                 }
@@ -1726,6 +1940,7 @@ fn recorder_worker_loop(
                     Ok(snapshot) => spawn_export_job(
                         id,
                         seconds,
+                        range,
                         output_path,
                         options,
                         snapshot,
@@ -1806,6 +2021,7 @@ fn recorder_worker_loop(
 fn spawn_export_job(
     id: u64,
     seconds: u32,
+    range: Option<ExportRange>,
     output_path: PathBuf,
     options: ExportOptions,
     snapshot: RecorderSnapshot,
@@ -1830,8 +2046,21 @@ fn spawn_export_job(
             .get(&id)
             .cloned()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-        let result =
-            snapshot.save_latest_with_options(seconds, &output_path, &options, Some(&cancel_flag));
+        let result = match range {
+            Some(range) => snapshot.save_range_by_sample_with_options(
+                range.start_sample,
+                range.end_sample,
+                &output_path,
+                &options,
+                Some(&cancel_flag),
+            ),
+            None => snapshot.save_latest_with_options(
+                seconds,
+                &output_path,
+                &options,
+                Some(&cancel_flag),
+            ),
+        };
         let remaining_exports = active_exports
             .fetch_sub(1, Ordering::Relaxed)
             .saturating_sub(1);
@@ -1963,6 +2192,11 @@ fn update_worker_status(
     active_exports: usize,
     error: Option<String>,
 ) {
+    // This lock is also read by the capture callback and UI meter. Never do
+    // filesystem work while holding it; all recorder statistics are in memory.
+    let temp_bytes = recorder.temp_bytes();
+    let updated_at = unix_millis_now();
+    let recovery_warning = recorder.recovery_warning.clone();
     let mut status = status.lock().expect("status lock");
     status.available_millis =
         samples_to_millis(recorder.available_samples(), recorder.config.audio);
@@ -1975,13 +2209,16 @@ fn update_worker_status(
     status.total_samples_written = recorder.manifest.total_samples_written;
     status.retained_start_sample = recorder.retained_start_sample();
     status.segment_count = recorder.manifest.segments.len();
-    status.temp_bytes = recorder.temp_bytes();
+    status.temp_bytes = temp_bytes;
+    if status.timeline_id != recorder.manifest.timeline_id {
+        status.timeline_id = recorder.manifest.timeline_id.clone();
+    }
     status.estimated_max_pcm_bytes = recorder.config.estimated_pcm_bytes();
     status.queued_chunks = queued_chunks;
     status.active_exports = active_exports;
-    status.writer_last_flush_unix_millis = unix_millis_now();
+    status.writer_last_flush_unix_millis = updated_at;
     status.recovered = recorder.recovered;
-    status.recovery_warning = recorder.recovery_warning.clone();
+    status.recovery_warning = recovery_warning;
     if let Some(error) = error {
         status.last_error = Some(error);
     }
@@ -2197,6 +2434,16 @@ fn sanitize_mp3_bitrate(value: u32) -> u32 {
     }
 }
 
+fn new_timeline_id() -> String {
+    static NEXT_TIMELINE: AtomicU64 = AtomicU64::new(1);
+    format!(
+        "buffer-{}-{}-{}",
+        std::process::id(),
+        unix_millis_now(),
+        NEXT_TIMELINE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 fn new_session_id() -> String {
     format!("session-{}", unix_millis_now())
 }
@@ -2349,6 +2596,9 @@ fn segment_index_from_name(file_name: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+mod long_recording_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2466,10 +2716,10 @@ mod tests {
         recorder.push_samples(&[1, 2, 3, 4, 5, 6, 7]).unwrap();
 
         let segments = &recorder.manifest().segments;
-        assert_eq!(recorder.available_samples(), 4);
-        assert_eq!(segments.first().unwrap().start_sample, 2);
+        assert_eq!(recorder.available_samples(), 3);
+        assert_eq!(segments.first().unwrap().start_sample, 4);
         assert!(!recorder.session_dir().join("segment-000000.pcm").exists());
-        assert!(recorder.session_dir().join("segment-000001.pcm").exists());
+        assert!(!recorder.session_dir().join("segment-000001.pcm").exists());
 
         let _ = fs::remove_dir_all(work_dir);
     }
@@ -2551,17 +2801,21 @@ mod tests {
 
         assert_eq!(recorder.config().max_replay_seconds, 4);
         assert_eq!(recorder.manifest().max_replay_seconds, 4);
-        assert_eq!(recorder.available_samples(), 4);
+        assert_eq!(recorder.available_samples(), 2);
         assert!(
             recorder
                 .manifest()
                 .segments
                 .first()
-                .is_some_and(|segment| segment.start_sample >= 6)
+                .is_some_and(|segment| segment.start_sample >= 8)
         );
         let _ = fs::remove_dir_all(work_dir);
     }
-    fn test_config(work_dir: &Path, segment_seconds: u32, max_replay_seconds: u32) -> CoreConfig {
+    pub(super) fn test_config(
+        work_dir: &Path,
+        segment_seconds: u32,
+        max_replay_seconds: u32,
+    ) -> CoreConfig {
         CoreConfig {
             audio: AudioConfig {
                 sample_rate: 1,
@@ -2573,13 +2827,13 @@ mod tests {
         }
     }
 
-    fn test_dir(name: &str) -> PathBuf {
+    pub(super) fn test_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("echoclip-core-{name}-{}", unix_millis_now()));
         let _ = fs::remove_dir_all(&path);
         path
     }
 
-    fn read_wav_samples(path: &Path) -> Vec<i16> {
+    pub(super) fn read_wav_samples(path: &Path) -> Vec<i16> {
         let bytes = fs::read(path).unwrap();
         bytes[44..]
             .chunks_exact(2)
@@ -2587,3 +2841,6 @@ mod tests {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod buffer_range_tests;

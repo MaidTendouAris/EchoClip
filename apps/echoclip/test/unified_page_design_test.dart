@@ -10,11 +10,14 @@ Widget shell(Widget child, {String lang = 'en', double scale = 1}) =>
       locale: Locale(lang),
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      home: MediaQuery(
-        data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-        child: Scaffold(
-          body: Padding(padding: const EdgeInsets.all(20), child: child),
-        ),
+      builder: (context, body) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(scale)),
+        child: body!,
+      ),
+      home: Scaffold(
+        body: Padding(padding: const EdgeInsets.all(20), child: child),
       ),
     );
 ValueNotifier<MeterSnapshot> meter() => ValueNotifier(
@@ -329,6 +332,16 @@ void main() {
               expect(tester.getTopLeft(page).dy, initialPageTop);
               if (showTopBar) {
                 expect(tester.getRect(find.byType(AppBar)), initialHeader);
+                final divider = tester.getRect(
+                  find.byKey(const ValueKey('navigation.divider')),
+                );
+                expect(divider.top, 0);
+                expect(divider.bottom, 800);
+                expect(tester.getTopLeft(page).dy, 0);
+                expect(
+                  initialHeader!.right,
+                  lessThanOrEqualTo(initialSidebar!.right),
+                );
                 expect(
                   find.descendant(
                     of: find.byType(AppBar),
@@ -421,7 +434,7 @@ void main() {
                   reason: 'recording mode menu $width $lang $scale',
                 );
                 expect(
-                  find.byType(PopupMenuItem<RecordingMode>),
+                  find.byType(AppMenuItem<RecordingMode>),
                   findsNWidgets(2),
                 );
                 await tester.tap(

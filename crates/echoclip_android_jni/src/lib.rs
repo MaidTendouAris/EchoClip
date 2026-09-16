@@ -180,6 +180,48 @@ pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeSaveLatest
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeBufferWindowJson(
+    env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+) -> jstring {
+    catch_jni_string(env, || {
+        Ok(serde_json::to_string(
+            &worker_ref(handle)?.worker.buffer_window(),
+        )?)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeSaveRangeToCache(
+    mut env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
+    range_json: JString,
+    output_path: JString,
+    format: JString,
+    mp3_bitrate_kbps: jint,
+    ffmpeg_path: JString,
+) -> jlong {
+    catch_jni_long(|| {
+        let worker = worker_ref(handle)?;
+        let range = serde_json::from_str::<echoclip_core::ExportRange>(&java_string(
+            &mut env,
+            &range_json,
+        )?)?;
+        let output = java_string(&mut env, &output_path)?;
+        let format = java_string(&mut env, &format)?;
+        let ffmpeg = java_string(&mut env, &ffmpeg_path)?;
+        let options = ExportOptions {
+            format: parse_export_format(&format),
+            mp3_bitrate_kbps: mp3_bitrate_kbps.max(32) as u32,
+            ffmpeg_path: (!ffmpeg.trim().is_empty()).then(|| PathBuf::from(ffmpeg)),
+        };
+        Ok(worker.worker.save_range_async(range, output, options)? as jlong)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_echoclip_echoclip_RustAudioCore_nativeStatusJson(
     env: JNIEnv,
     _this: JObject,
@@ -490,11 +532,7 @@ fn java_string(env: &mut JNIEnv, value: &JString) -> Result<String, Box<dyn std:
 }
 
 fn parse_export_format(value: &str) -> ExportFormat {
-    if value.eq_ignore_ascii_case("wav") {
-        ExportFormat::Wav
-    } else {
-        ExportFormat::Mp3
-    }
+    ExportFormat::from_name(value).unwrap_or(ExportFormat::Mp3)
 }
 
 fn catch_jni_long(action: impl FnOnce() -> Result<jlong, Box<dyn std::error::Error>>) -> jlong {

@@ -69,6 +69,19 @@ private fun isValidSyncHost(value: String): Boolean {
         !host.contains('#')
 }
 object RecordingStorage {
+    fun getAudioGains(context: Context): Map<String, Int> {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return mapOf("microphone" to prefs.getInt("microphone_gain", 100).coerceIn(0, 300), "system" to prefs.getInt("system_gain", 100).coerceIn(0, 300))
+    }
+    fun setAudioGains(context: Context, microphone: Int?, system: Int?): Map<String, Int> {
+        val current = getAudioGains(context)
+        val mic = (microphone ?: current.getValue("microphone")).coerceIn(0, 300)
+        val sys = (system ?: current.getValue("system")).coerceIn(0, 300)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putInt("microphone_gain", mic).putInt("system_gain", sys).apply()
+        ReplayForegroundService.activeService?.microphoneGainPercent = mic
+        return mapOf("microphone" to mic, "system" to sys)
+    }
+
     private const val PREFS_NAME = "echoclip_recording_storage"
     private const val KEY_FOLDER_URI = "folder_uri"
     private const val KEY_SAMPLE_RATE = "sample_rate"
@@ -93,10 +106,10 @@ object RecordingStorage {
     private const val DEFAULT_UI_LANGUAGE_MODE = "system"
     private const val DEFAULT_RECORDING_MODE = "standard"
     private const val DEFAULT_LOCK_RECORDING_TRIGGER = "screen_off"
-    private val SAMPLE_RATE_OPTIONS = setOf(8_000, 16_000, 24_000, 48_000)
-    private const val MIN_BUFFER_SECONDS = 60
+    private val SAMPLE_RATE_OPTIONS = setOf(8_000, 16_000, 24_000, 44_100, 48_000)
+    private const val MIN_BUFFER_SECONDS = 5 * 60
     private const val MAX_BUFFER_SECONDS = 24 * 60 * 60
-    private val EXPORT_FORMAT_OPTIONS = setOf("mp3", "wav")
+    private val EXPORT_FORMAT_OPTIONS = setOf("wav", "mp3", "flac", "ogg", "m4a", "aac")
     private val MP3_BITRATE_OPTIONS = setOf(32, 48, 64, 96, 128, 160, 192, 256, 320)
     private val UI_LANGUAGE_MODE_OPTIONS = setOf("system", "en", "zh")
     private val RECORDING_MODE_OPTIONS = setOf("standard", "lockscreen")
@@ -320,7 +333,7 @@ object RecordingStorage {
         return value.coerceIn(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS)
     }
 
-    private fun sanitizeExportFormat(value: String): String {
+    fun sanitizeExportFormat(value: String): String {
         val normalized = value.lowercase()
         return if (normalized in EXPORT_FORMAT_OPTIONS) normalized else DEFAULT_EXPORT_FORMAT
     }

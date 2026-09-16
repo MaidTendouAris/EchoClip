@@ -29,6 +29,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 class ReplayForegroundService : Service() {
+    @Volatile var microphoneGainPercent = 100
     private var rustBufferHandle: Long = 0
     private var sampleRate: Int = 16_000
     private var bufferSeconds: Int = 1_800
@@ -68,6 +69,7 @@ class ReplayForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeService = this
+        microphoneGainPercent = RecordingStorage.getAudioGains(this).getValue("microphone")
         val settings = RecordingStorage.getAudioSettings(this)
         val modeSettings = RecordingStorage.getRecordingModeSettings(this)
         sampleRate = settings.sampleRate
@@ -382,6 +384,7 @@ class ReplayForegroundService : Service() {
                 while (shouldCapture) {
                     val read = record.read(chunk, 0, chunk.size)
                     if (read > 0) {
+                        AudioGain.apply(chunk, read, microphoneGainPercent)
                         pushSamples(chunk, read)
                         updateLevels(chunk, read)
                     }

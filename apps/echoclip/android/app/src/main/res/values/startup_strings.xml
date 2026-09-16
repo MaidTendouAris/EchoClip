@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="startup_channel">Startup tasks</string>
+    <string name="startup_ready">EchoClip is ready</string>
+    <string name="startup_open">Tap to open and run your startup tasks</string>
+</resources>

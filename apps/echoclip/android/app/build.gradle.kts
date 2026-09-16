@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,10 +7,59 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Private, local configuration. See key.properties.example and docs/ANDROID_SIGNING.md.
+val releaseSigningFile = rootProject.file("key.properties")
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningFile.isFile) {
+        releaseSigningFile.reader(Charsets.UTF_8).use { load(it) }
+    }
+}
+val releaseStoreFile = releaseSigningProperties.getProperty("storeFile")
+    ?.takeIf { it.isNotBlank() }
+    ?.let { rootProject.file(it) }
+
+// Keep Debug builds usable without release credentials. Every Release build must
+// pass this task; missing credentials must never produce a Debug-signed release.
+val validateReleaseSigningConfig = tasks.register("validateReleaseSigningConfig") {
+    group = "verification"
+    description = "Checks that local release signing settings and keystore exist."
+    doLast {
+        if (!releaseSigningFile.isFile) {
+            throw GradleException(
+                "Release signing is not configured. Copy android/key.properties.example " +
+                    "to android/key.properties and fill in your keystore settings. " +
+                    "See docs/ANDROID_SIGNING.md. Debug builds do not need this file."
+            )
+        }
+        val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+            .filter { releaseSigningProperties.getProperty(it).isNullOrBlank() }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Release signing: fill in these android/key.properties entries: " +
+                    missing.joinToString(", ") + ". See docs/ANDROID_SIGNING.md."
+            )
+        }
+        if (releaseStoreFile?.isFile != true) {
+            throw GradleException(
+                "Release signing: storeFile must point to an existing keystore. " +
+                    "Use forward slashes in Windows paths. See docs/ANDROID_SIGNING.md."
+            )
+        }
+    }
+}
+
+tasks.matching {
+    it.name == "preReleaseBuild" || it.name == "validateSigningRelease"
+}.configureEach {
+    dependsOn(validateReleaseSigningConfig)
+}
+
 android {
     namespace = "com.echoclip.echoclip"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+
+    buildFeatures { buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -38,11 +89,18 @@ android {
         unitTests.isReturnDefaultValues = true
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseStoreFile
+            storePassword = releaseSigningProperties.getProperty("storePassword")
+            keyAlias = releaseSigningProperties.getProperty("keyAlias")
+            keyPassword = releaseSigningProperties.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

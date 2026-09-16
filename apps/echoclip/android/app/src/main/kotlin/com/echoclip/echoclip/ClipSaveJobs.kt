@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.SystemClock
 import android.provider.DocumentsContract
 import java.io.File
+import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.FileInputStream
@@ -33,17 +34,26 @@ internal object ClipSaveJobs {
         }
     }
 
+    fun bufferWindow(context: Context): Map<String, Any?> {
+        val lease = acquireRecorder(context)
+        try { return RustAudioCore.bufferWindow(lease.handle) }
+        finally { if (lease.handle != 0L) recorder.release(lease.handle) }
+    }
+
     fun start(context: Context, seconds: Int, handle: Long = 0L,
-              formatOverride: String? = null, bitrateOverride: Int? = null): Map<String, Any?> {
+              formatOverride: String? = null, bitrateOverride: Int? = null, range: Map<String, Any?>? = null): Map<String, Any?> {
         val app = context.applicationContext
         val folder = RecordingStorage.getRecordingFolderUri(app)
             ?: return mapOf("saved" to false, "error" to "recording_folder_not_selected")
         val stored = RecordingStorage.getExportSettings(app)
         val settings = ExportSettings(
-            format = formatOverride?.let { if (it.equals("wav", true)) "wav" else "mp3" }
+            format = formatOverride?.let { RecordingStorage.sanitizeExportFormat(it) }
                 ?: stored.format,
             mp3BitrateKbps = bitrateOverride ?: stored.mp3BitrateKbps,
         )
+        if (settings.format == "wav" && seconds > 14_400) {
+            return mapOf("saved" to false, "error" to "wav_duration_limit_4_hours")
+        }
         val job = SaveJobState(nextId.getAndIncrement(), seconds.coerceAtLeast(1), "Queued",
             SystemClock.elapsedRealtime())
         val capturedLease = if (handle != 0L) recorder.retain(handle) else null
@@ -64,7 +74,7 @@ internal object ClipSaveJobs {
                     .firstOrNull { it.isFile && it.canExecute() }?.absolutePath
                 val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
                 ClipSaveRunner(app, nativeHandle, lease.settings.sampleRate, ffmpeg)
-                    .runSaveJob(job, job.requestedSeconds, folder, timestamp, settings)
+                    .runSaveJob(job, job.requestedSeconds, folder, timestamp, settings, range)
             } catch (error: Exception) {
                 if (job.cancelRequested) job.cancel()
                 else job.fail("export_failed:${error.javaClass.simpleName}:${error.message}")
@@ -102,7 +112,14 @@ private class ClipSaveRunner(val context: Context, val handle: Long,
                              val sampleRate: Int, val ffmpegPath: String?) {
     private val EXPORT_WAIT_TIMEOUT_MILLIS = 10 * 60 * 1_000L
     private val EXPORT_POLL_INTERVAL_MILLIS = 100L
-    private fun mimeTypeForExport(format: String) = if (format == "wav") "audio/wav" else "audio/mpeg"
+    private fun mimeTypeForExport(format: String) = when (format) {
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
+        "ogg" -> "audio/ogg"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        else -> "audio/mpeg"
+    }
     private fun waitForExport(job: SaveJobState, jobId: Long): RustExportStatus {
         var last = RustAudioCore.exportStatus(handle, jobId)
         var timedOut = false
@@ -128,6 +145,7 @@ private class ClipSaveRunner(val context: Context, val handle: Long,
         folderUri: Uri,
         timestamp: String,
         exportSettings: ExportSettings,
+        range: Map<String, Any?>? = null,
     ) {
         var cacheFile: File? = null
         try {
@@ -139,6 +157,10 @@ private class ClipSaveRunner(val context: Context, val handle: Long,
             state.format = exportSettings.format
             val extension = exportSettings.format
             cacheFile = File(context.cacheDir, "echoclip-export-$timestamp-${state.id}-${seconds}s.$extension")
+            if (range != null) {
+                val window = RustAudioCore.bufferWindow(handle)
+                require(range["bufferId"] == window["bufferId"]) { "BUFFER_RANGE_EXPIRED" }
+            }
             val rustJobId = RustAudioCore.saveLatestToCache(
                 handle,
                 seconds,
@@ -146,6 +168,7 @@ private class ClipSaveRunner(val context: Context, val handle: Long,
                 exportSettings.format,
                 exportSettings.mp3BitrateKbps,
                 ffmpegPath,
+                range?.let { JSONObject(it).toString() },
             )
             state.rustJobId = rustJobId
             if (rustJobId == 0L) {

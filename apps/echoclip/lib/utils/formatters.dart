@@ -190,6 +190,9 @@ String _formatHertz(int sampleRate) {
   if (sampleRate >= 1000 && sampleRate % 1000 == 0) {
     return '${sampleRate ~/ 1000} kHz';
   }
+  if (sampleRate >= 1000 && sampleRate % 100 == 0) {
+    return '${(sampleRate / 1000).toStringAsFixed(1)} kHz';
+  }
   return '$sampleRate Hz';
 }
 

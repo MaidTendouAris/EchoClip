@@ -1,3 +1,6 @@
+#[cfg(target_os = "windows")]
+mod startup;
+
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
@@ -168,7 +171,17 @@ impl AudioTimeline {
     /// Produces one fixed-time-axis chunk. A source that has not delivered
     /// enough frames contributes silence; dual-source capture gives each source
     /// 6 dB of headroom so two full-scale inputs do not hard-clip.
+    #[cfg(test)]
     fn mix(&self, frame_count: usize) -> (Vec<i16>, TimelineResult) {
+        self.mix_with_gains(frame_count, 100, 100)
+    }
+
+    fn mix_with_gains(
+        &self,
+        frame_count: usize,
+        microphone_gain: u32,
+        system_gain: u32,
+    ) -> (Vec<i16>, TimelineResult) {
         let (microphone, microphone_missing, microphone_drift_dropped) = if self.microphone_enabled
         {
             lock_mutex(&self.microphone).take_for_timeline(frame_count)
@@ -191,13 +204,16 @@ impl AudioTimeline {
             .into_iter()
             .zip(system_audio)
             .map(|(microphone, system_audio)| {
-                if self.microphone_enabled && self.system_audio_enabled {
-                    ((i32::from(microphone) + i32::from(system_audio)) / 2) as i16
+                let mic = i64::from(microphone) * i64::from(microphone_gain);
+                let system = i64::from(system_audio) * i64::from(system_gain);
+                let sample = if self.microphone_enabled && self.system_audio_enabled {
+                    (mic + system) / 200
                 } else if self.microphone_enabled {
-                    microphone
+                    mic / 100
                 } else {
-                    system_audio
-                }
+                    system / 100
+                };
+                sample.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
             })
             .collect();
         (output, result)
@@ -270,6 +286,8 @@ struct RecorderHandle {
     capture: Mutex<Option<CaptureThread>>,
     capture_selection: Mutex<CaptureSelection>,
     capture_runtime: Mutex<CaptureRuntimeInfo>,
+    microphone_gain: AtomicU32,
+    system_audio_gain: AtomicU32,
     capture_running: AtomicBool,
     capture_sample_rate: AtomicU32,
     capture_channels: AtomicU32,
@@ -324,6 +342,8 @@ impl RecorderHandle {
             capture: Mutex::new(None),
             capture_selection: Mutex::new(CaptureSelection::default()),
             capture_runtime: Mutex::new(CaptureRuntimeInfo::default()),
+            microphone_gain: AtomicU32::new(100),
+            system_audio_gain: AtomicU32::new(100),
             capture_running: AtomicBool::new(false),
             capture_sample_rate: AtomicU32::new(0),
             capture_channels: AtomicU32::new(0),
@@ -992,19 +1012,90 @@ pub extern "C" fn ec_save_latest_wav(
     })
 }
 
-/// Export the most recent buffer to WAV or MP3 with an optional bitrate and
-/// FFmpeg path. `format` is 0 = wav (FFmpeg is ignored) and 1 = mp3 (FFmpeg
-/// must be provided). Returns when the export job finishes.
+/// Export recent audio: 0 = wav, 1 = mp3, 2 = flac, 3 = ogg, 4 = m4a, 5 = aac.
+/// FFmpeg is required except for legacy WAV callers without an executable path.
+/// Returns when the export job finishes.
 ///
 /// # Safety
 ///
-/// When `format` is mp3, `ffmpeg_path_utf8` must be null or point to a valid
+/// `ffmpeg_path_utf8` must be null or point to a valid
 /// NUL-terminated UTF-8 path. `output_path_utf8` must point to a valid
 /// NUL-terminated UTF-8 path.
 #[unsafe(no_mangle)]
 pub extern "C" fn ec_save_latest(
     handle: u64,
     seconds: u32,
+    format: u32,
+    bitrate_kbps: u32,
+    ffmpeg_path_utf8: *const c_char,
+    output_path_utf8: *const c_char,
+) -> i32 {
+    save_export(
+        handle,
+        seconds,
+        std::ptr::null(),
+        format,
+        bitrate_kbps,
+        ffmpeg_path_utf8,
+        output_path_utf8,
+    )
+}
+
+/// Export fixed buffer coordinates. All pointers must be valid NUL-terminated UTF-8 strings.
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_save_range(
+    handle: u64,
+    range_json_utf8: *const c_char,
+    format: u32,
+    bitrate_kbps: u32,
+    ffmpeg_path_utf8: *const c_char,
+    output_path_utf8: *const c_char,
+) -> i32 {
+    if range_json_utf8.is_null() {
+        return ffi_result(handle, || Err(FfiError::invalid("BUFFER_RANGE_INVALID")));
+    }
+    save_export(
+        handle,
+        1,
+        range_json_utf8,
+        format,
+        bitrate_kbps,
+        ffmpeg_path_utf8,
+        output_path_utf8,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_buffer_window_json(
+    handle: u64,
+    output: *mut c_char,
+    capacity: usize,
+) -> usize {
+    match std::panic::catch_unwind(|| -> Result<usize, FfiError> {
+        let recorder = get_handle(handle)?;
+        let worker = read_lock(&recorder.worker);
+        let worker = worker
+            .as_ref()
+            .ok_or_else(|| stopped_error("recorder worker is stopped"))?;
+        let json = serde_json::to_string(&worker.buffer_window()).map_err(FfiError::core)?;
+        copy_utf8_result(&json, output, capacity)
+    }) {
+        Ok(Ok(required)) => required,
+        Ok(Err(error)) => {
+            record_error(handle, &error.message);
+            0
+        }
+        Err(_) => {
+            record_error(handle, "panic in ec_buffer_window_json");
+            0
+        }
+    }
+}
+
+fn save_export(
+    handle: u64,
+    seconds: u32,
+    range_json_utf8: *const c_char,
     format: u32,
     bitrate_kbps: u32,
     ffmpeg_path_utf8: *const c_char,
@@ -1018,31 +1109,42 @@ pub extern "C" fn ec_save_latest(
         if output_path.as_os_str().is_empty() {
             return Err(FfiError::invalid("output_path_utf8 must not be empty"));
         }
-        let options = match format {
-            0 => ExportOptions::wav(),
-            1 => {
-                let ffmpeg_path = utf8_path(ffmpeg_path_utf8, "ffmpeg_path_utf8")?;
-                if ffmpeg_path.as_os_str().is_empty() {
-                    return Err(FfiError::invalid(
-                        "ffmpeg_path_utf8 must not be empty for mp3 export",
-                    ));
-                }
-                ExportOptions::mp3(ffmpeg_path, bitrate_kbps)
-            }
-            other => {
-                return Err(FfiError::invalid(format!(
-                    "unknown export format {other} (expected 0 = wav, 1 = mp3)"
-                )));
-            }
+        let export_format = match format {
+            0 => echoclip_core::ExportFormat::Wav,
+            1 => echoclip_core::ExportFormat::Mp3,
+            2 => echoclip_core::ExportFormat::Flac,
+            3 => echoclip_core::ExportFormat::Ogg,
+            4 => echoclip_core::ExportFormat::M4a,
+            5 => echoclip_core::ExportFormat::Aac,
+            _ => return Err(FfiError::invalid("unknown export format")),
+        };
+        let ffmpeg_path = if ffmpeg_path_utf8.is_null() {
+            None
+        } else {
+            let path = utf8_path(ffmpeg_path_utf8, "ffmpeg_path_utf8")?;
+            (!path.as_os_str().is_empty()).then_some(path)
+        };
+        let options = ExportOptions {
+            format: export_format,
+            mp3_bitrate_kbps: bitrate_kbps,
+            ffmpeg_path,
         };
         let recorder = get_handle(handle)?;
         let worker = read_lock(&recorder.worker);
         let worker = worker
             .as_ref()
             .ok_or_else(|| stopped_error("recorder worker is stopped"))?;
-        let job_id = worker
-            .save_latest_async(seconds, output_path, options)
-            .map_err(FfiError::from)?;
+        let job_id = if range_json_utf8.is_null() {
+            worker.save_latest_async(seconds, output_path, options)
+        } else {
+            let text = unsafe { CStr::from_ptr(range_json_utf8) }
+                .to_str()
+                .map_err(FfiError::core)?;
+            let range =
+                serde_json::from_str::<echoclip_core::ExportRange>(text).map_err(FfiError::core)?;
+            worker.save_range_async(range, output_path, options)
+        }
+        .map_err(FfiError::from)?;
 
         loop {
             if recorder.shutting_down.load(Ordering::Acquire) {
@@ -1070,6 +1172,83 @@ pub extern "C" fn ec_save_latest(
             }
         }
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_set_capture_gains(
+    handle: u64,
+    microphone_percent: u32,
+    system_percent: u32,
+) -> i32 {
+    ffi_result(handle, || {
+        if microphone_percent > 300 || system_percent > 300 {
+            return Err(FfiError::invalid("gain must be between 0 and 300"));
+        }
+        let recorder = get_handle(handle)?;
+        recorder
+            .microphone_gain
+            .store(microphone_percent, Ordering::Relaxed);
+        recorder
+            .system_audio_gain
+            .store(system_percent, Ordering::Relaxed);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_set_startup(handle: u64, enabled: i32, executable: *const c_char) -> i32 {
+    ffi_result(handle, || {
+        #[cfg(target_os = "windows")]
+        {
+            let recorder = get_handle(handle)?;
+            let command = startup::command(&utf8_path(executable, "executable")?, enabled == 2)
+                .map_err(FfiError::core)?;
+            let previous = startup::current_value().map_err(FfiError::core)?;
+            startup::set_value((enabled != 0).then_some(command.as_str()))
+                .map_err(FfiError::core)?;
+            let result = lock_mutex(&recorder.scheduler).editor_command_json(
+                &serde_json::json!({"operation":"set_startup_enabled", "enabled":enabled != 0})
+                    .to_string(),
+                now_utc_millis(),
+            );
+            if let Err(error) = result {
+                startup::set_value(previous.as_deref()).map_err(FfiError::core)?;
+                return Err(FfiError::core(error));
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (enabled, executable);
+            Err(FfiError::invalid("STARTUP_UNSUPPORTED"))
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ec_is_startup_registered(handle: u64, executable: *const c_char) -> i32 {
+    let mut registered = false;
+    let result = ffi_result(handle, || {
+        #[cfg(target_os = "windows")]
+        {
+            let command = startup::command(&utf8_path(executable, "executable")?, false)
+                .map_err(FfiError::core)?;
+            let current = startup::current_value().map_err(FfiError::core)?;
+            registered = current.as_deref() == Some(command.as_str())
+                || current.as_deref() == Some(format!("{command} --silent").as_str());
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = executable;
+            Err(FfiError::invalid("STARTUP_UNSUPPORTED"))
+        }
+    });
+    if result == EC_OK {
+        i32::from(registered)
+    } else {
+        -1
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1730,6 +1909,10 @@ fn execute_scheduled_save(
     let extension = match format {
         ScheduledExportFormat::Wav => "wav",
         ScheduledExportFormat::Mp3 => "mp3",
+        ScheduledExportFormat::Flac => "flac",
+        ScheduledExportFormat::Ogg => "ogg",
+        ScheduledExportFormat::M4a => "m4a",
+        ScheduledExportFormat::Aac => "aac",
     };
     let file_name = format!(
         "echoclip-scheduled-{}-{}s.{}",
@@ -1738,14 +1921,10 @@ fn execute_scheduled_save(
         extension
     );
     let output_path = unique_scheduled_output(&recording_dir, &file_name);
-    let options = match format {
-        ScheduledExportFormat::Wav => ExportOptions::wav(),
-        ScheduledExportFormat::Mp3 => {
-            let Some(ffmpeg_path) = ffmpeg_path else {
-                return NativeActionResult::failed("FFMPEG_UNAVAILABLE");
-            };
-            ExportOptions::mp3(ffmpeg_path, bitrate_kbps)
-        }
+    let options = ExportOptions {
+        format: echoclip_core::ExportFormat::from_name(extension).unwrap(),
+        mp3_bitrate_kbps: bitrate_kbps,
+        ffmpeg_path,
     };
     let job_id = match worker.save_latest_async(seconds, &output_path, options) {
         Ok(id) => id,
@@ -2018,7 +2197,11 @@ fn run_native_capture(
         if frames == 0 {
             continue;
         }
-        let (mixed, timeline_result) = timeline.mix(frames);
+        let (mixed, timeline_result) = timeline.mix_with_gains(
+            frames,
+            recorder.microphone_gain.load(Ordering::Relaxed),
+            recorder.system_audio_gain.load(Ordering::Relaxed),
+        );
         recorder
             .microphone_silence_filled_samples
             .fetch_add(timeline_result.microphone_missing as u64, Ordering::Relaxed);
@@ -2832,6 +3015,24 @@ mod tests {
         assert_eq!(output, [3, 4, 5, 6, 7, 0]);
         assert_eq!(missing.microphone_missing, 1);
         assert_eq!(missing.system_audio_missing, 0);
+    }
+
+    #[test]
+    fn source_gains_support_mute_unity_and_boost_without_wraparound() {
+        let timeline = AudioTimeline::new(&CaptureSelection::default(), 1000);
+        timeline.enqueue(CaptureSource::Microphone, &[1000, -20000, 20000]);
+        assert_eq!(
+            timeline.mix_with_gains(3, 300, 100).0,
+            [3000, i16::MIN, i16::MAX]
+        );
+        timeline.enqueue(CaptureSource::Microphone, &[1000, -20000]);
+        assert_eq!(timeline.mix_with_gains(2, 0, 100).0, [0, 0]);
+        let mut selection = CaptureSelection::default();
+        selection.system_audio_enabled = true;
+        let timeline = AudioTimeline::new(&selection, 1000);
+        timeline.enqueue(CaptureSource::Microphone, &[1000]);
+        timeline.enqueue(CaptureSource::SystemAudio, &[2000]);
+        assert_eq!(timeline.mix_with_gains(1, 200, 50).0, [1500]);
     }
 
     #[test]

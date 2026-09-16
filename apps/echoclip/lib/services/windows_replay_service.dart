@@ -36,7 +36,7 @@ class WindowsReplayService {
 
   static final WindowsReplayService instance = WindowsReplayService._();
 
-  static const Set<int> _sampleRates = {8000, 16000, 24000, 48000};
+  static const Set<int> _sampleRates = {8000, 16000, 24000, 44100, 48000};
   static const Set<String> _recordingExtensions = {
     '.aac',
     '.flac',
@@ -65,6 +65,11 @@ class WindowsReplayService {
 
   int _sampleRate = 16000;
   int _bufferSeconds = 1800;
+  String _exportFormat = "mp3";
+  bool _startupSilent = false;
+  static const _exportFormats = ["wav", "mp3", "flac", "ogg", "m4a", "aac"];
+  int _microphoneGain = 100;
+  int _systemGain = 100;
   bool _microphoneEnabled = true;
   bool _systemAudioEnabled = false;
   String? _microphoneDeviceId;
@@ -124,8 +129,15 @@ class WindowsReplayService {
         'getUiLanguageMode' => <String, Object?>{'mode': _uiLanguageMode},
         'setUiLanguageMode' => _setUiLanguageMode(args['mode']),
         'getAudioSettings' => _audioSettingsMap(),
+        'getExportSettings' => {'format': _exportFormat},
+        'setExportSettings' => _runExclusive(() => _setExportSettings(args)),
         'setAudioSettings' => _setAudioSettings(args),
         'listAudioInputDevices' => _listAudioInputDevices(),
+        'getAudioGains' => {
+          'microphone': _microphoneGain,
+          'system': _systemGain,
+        },
+        'setAudioGains' => _setAudioGains(args),
         'getAudioSourceSettings' => _audioSourceSettingsMap(),
         'setAudioSourceSettings' => _setAudioSourceSettings(args),
         'getServerSyncSettings' => _serverSyncSettingsMap(),
@@ -140,6 +152,21 @@ class WindowsReplayService {
         'getMeterStatus' => _meterMap(),
         'startReplay' => _runExclusive(() => _startReplay(args)),
         'stopReplay' => _runExclusive(_stopReplay),
+        'getBufferWindow' => _ffi!.bufferWindowJson(_nativeHandle!),
+        'getStartupSettings' => _startupSettingsMap(),
+        'setStartupSilent' => _runExclusive(
+          () => _setStartupSilent(args['silent'] == true),
+        ),
+        'setStartupEnabled' => _runExclusive(
+          () => _setStartupEnabled(args['enabled'] == true),
+        ),
+        'consumeStartupTasks' => _runExclusive(_consumeStartupTasks),
+        'saveBufferRange' => _runExclusive(
+          () => _saveReplayClip(
+            _asInt(args['seconds'], 1),
+            range: Map<String, Object?>.from(args['range'] as Map),
+          ),
+        ),
         'saveReplayClip' => _runExclusive(
           () => _saveReplayClip(_asInt(args['seconds'], 30)),
         ),
@@ -264,8 +291,14 @@ class WindowsReplayService {
       if (decoded is! Map) {
         return;
       }
+      _exportFormat = _exportFormats.contains(decoded['exportFormat'])
+          ? decoded['exportFormat'] as String
+          : 'mp3';
+      _startupSilent = decoded['startupSilent'] == true;
       _sampleRate = _sanitizeSampleRate(decoded['sampleRate']);
       _bufferSeconds = _sanitizeBufferSeconds(decoded['bufferSeconds']);
+      _microphoneGain = _asInt(decoded['microphoneGain'], 100).clamp(0, 300);
+      _systemGain = _asInt(decoded['systemGain'], 100).clamp(0, 300);
       _microphoneEnabled = decoded['microphoneEnabled'] != false;
       _systemAudioEnabled = decoded['systemAudioEnabled'] == true;
       if (!_microphoneEnabled && !_systemAudioEnabled) {
@@ -382,6 +415,8 @@ class WindowsReplayService {
       const JsonEncoder.withIndent('  ').convert(<String, Object?>{
         'sampleRate': _sampleRate,
         'bufferSeconds': _bufferSeconds,
+        'microphoneGain': _microphoneGain,
+        'systemGain': _systemGain,
         'microphoneEnabled': _microphoneEnabled,
         'systemAudioEnabled': _systemAudioEnabled,
         'microphoneDeviceId': _microphoneDeviceId,
@@ -389,6 +424,8 @@ class WindowsReplayService {
         'recordingMode': _recordingMode,
         'lockRecordingTrigger': _lockRecordingTrigger,
         'recordingFolder': _recordingFolder,
+        'exportFormat': _exportFormat,
+        'startupSilent': _startupSilent,
         'lastAvailableMillis': _persistedAvailableMillis,
         'lastSessionStartedUnixMillis': _sessionStartedUnixMillis,
         'syncEnabled': _syncEnabled,
@@ -403,6 +440,53 @@ class WindowsReplayService {
       await settingsFile.delete();
     }
     await temporary.rename(settingsFile.path);
+  }
+
+  Future<Map<String, Object?>> _setExportSettings(
+    Map<String, Object?> args,
+  ) async {
+    final next = args['format'];
+    if (!_exportFormats.contains(next)) {
+      return _operationError('invalid_export_format');
+    }
+    _exportFormat = next as String;
+    await _persistSettings();
+    return {'ok': true, 'format': _exportFormat};
+  }
+
+  Future<Map<String, Object?>> _startupSettingsMap() async {
+    final enabled = _ffi!.isStartupRegistered(
+      _nativeHandle!,
+      Platform.resolvedExecutable,
+    );
+    return {
+      ...await _scheduleSnapshot(),
+      'startupSupported': true,
+      'startupEnabled': enabled,
+      'startupSilent': enabled && _startupSilent,
+    };
+  }
+
+  Future<Map<String, Object?>> _setStartupSilent(bool silent) async {
+    final enabled = _ffi!.isStartupRegistered(
+      _nativeHandle!,
+      Platform.resolvedExecutable,
+    );
+    if (silent && !enabled) return _operationError('startup_required');
+    final code = _ffi!.setStartupCode(
+      _nativeHandle!,
+      enabled,
+      Platform.resolvedExecutable,
+      silent: silent && enabled,
+    );
+    if (code != WindowsReplayFfi.ok) {
+      return _operationError(
+        _ffi!.lastError(_nativeHandle!) ?? 'startup_failed',
+      );
+    }
+    _startupSilent = silent && enabled;
+    await _persistSettings();
+    return _startupSettingsMap();
   }
 
   Future<Map<String, Object?>> _setUiLanguageMode(Object? value) async {
@@ -916,7 +1000,39 @@ class WindowsReplayService {
     }
   }
 
-  Future<Map<String, Object?>> _saveReplayClip(int requestedSeconds) async {
+  bool launchedAtStartup = false;
+  String? _startupToken;
+
+  Future<Map<String, Object?>> _setStartupEnabled(bool enabled) async {
+    final code = _ffi!.setStartupCode(
+      _nativeHandle!,
+      enabled,
+      Platform.resolvedExecutable,
+    );
+    if (code != WindowsReplayFfi.ok) {
+      return _operationError(
+        _ffi!.lastError(_nativeHandle!) ?? 'startup_failed',
+      );
+    }
+    _startupSilent = false;
+    await _persistSettings();
+    return _startupSettingsMap();
+  }
+
+  Future<Map<String, Object?>> _consumeStartupTasks() async {
+    if (!launchedAtStartup) return _scheduleSnapshot();
+    _startupToken ??= 'windows-${DateTime.now().microsecondsSinceEpoch}-$pid';
+    final result = await _upsertScheduledTask({
+      'task': {'operation': 'activate_startup_tasks', 'token': _startupToken},
+    });
+    if (result['ok'] == true) launchedAtStartup = false;
+    return result;
+  }
+
+  Future<Map<String, Object?>> _saveReplayClip(
+    int requestedSeconds, {
+    Map<String, Object?>? range,
+  }) async {
     final root = _recordingFolder;
     if (root == null || !Directory(root).existsSync()) {
       return <String, Object?>{
@@ -924,6 +1040,10 @@ class WindowsReplayService {
         'pending': false,
         'error': 'recording_folder_not_selected',
       };
+    }
+    final format = _exportFormat;
+    if (format == 'wav' && requestedSeconds > 14400) {
+      return {'saved': false, 'error': 'wav_duration_limit_4_hours'};
     }
     final seconds = requestedSeconds.clamp(1, 86400);
     final ffi = _ffi ??= WindowsReplayFfi.open();
@@ -959,7 +1079,7 @@ class WindowsReplayService {
         };
       }
       final now = DateTime.now();
-      final baseName = 'echoclip-${_timestamp(now)}-${savedSeconds}s.mp3';
+      final baseName = 'echoclip-${_timestamp(now)}-${savedSeconds}s.$format';
       final output = _uniqueFile(Directory(root), baseName);
 
       final outcome = await Isolate.run(() {
@@ -969,9 +1089,10 @@ class WindowsReplayService {
             handle!,
             seconds,
             output.path,
-            format: 1,
+            format: _exportFormats.indexOf(format),
             mp3BitrateKbps: 128,
             ffmpegPath: ffmpeg,
+            range: range,
           );
           return (
             code: code,
@@ -1528,7 +1649,27 @@ class WindowsReplayService {
     };
   }
 
+  Future<Map<String, Object?>> _setAudioGains(Map<String, Object?> args) async {
+    final microphone = _asInt(
+      args['microphone'],
+      _microphoneGain,
+    ).clamp(0, 300);
+    final system = _asInt(args['system'], _systemGain).clamp(0, 300);
+    final code = _ffi!.setGainsCode(_nativeHandle!, microphone, system);
+    if (code != WindowsReplayFfi.ok) {
+      return _operationError(_ffi!.lastError(_nativeHandle!) ?? 'gain_failed');
+    }
+    _microphoneGain = microphone;
+    _systemGain = system;
+    await _persistSettings();
+    return {'ok': true, 'microphone': microphone, 'system': system};
+  }
+
   void _configureNativeCapture(WindowsReplayFfi ffi, int handle) {
+    final gainCode = ffi.setGainsCode(handle, _microphoneGain, _systemGain);
+    if (gainCode != WindowsReplayFfi.ok) {
+      throw ffi.errorFor('ec_set_capture_gains', gainCode, handle);
+    }
     final result = ffi.configureCaptureCode(
       handle,
       microphoneEnabled: _microphoneEnabled,
@@ -1672,7 +1813,7 @@ class WindowsReplayService {
 
   Map<String, Object?> _failureFor(String method, Object error) {
     final message = 'windows_backend_exception:$error';
-    if (method == 'saveReplayClip') {
+    if (method == 'saveReplayClip' || method == 'saveBufferRange') {
       return <String, Object?>{
         'saved': false,
         'pending': false,
@@ -1722,7 +1863,7 @@ class WindowsReplayService {
   }
 
   int _sanitizeBufferSeconds(Object? value) {
-    return _asInt(value, 1800).clamp(60, 24 * 60 * 60);
+    return _asInt(value, 1800).clamp(5 * 60, 24 * 60 * 60);
   }
 
   int _sanitizeUploadPort(Object? value) {

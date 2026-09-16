@@ -128,7 +128,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get presetSaveDuration => 'Preset';
 
   @override
-  String get customSaveDuration => 'Custom';
+  String get customSaveDuration => 'Buffer range';
 
   @override
   String get customSaveSeconds => 'Save duration (seconds)';
@@ -602,7 +602,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get bufferDurationMinutes => 'Buffer duration (minutes)';
 
   @override
-  String get bufferDurationHelper => '1 to 1440 minutes';
+  String get bufferDurationHelper => '5 to 1440 minutes';
 
   @override
   String get minutesUnit => 'min';
@@ -1038,4 +1038,137 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get saveWritingStatus => 'Writing audio';
+
+  @override
+  String get bufferRange => 'Buffer range';
+
+  @override
+  String get bufferRangeHelp =>
+      'Choose a range in whole seconds. 00:00:00 is the oldest buffered audio when this window opens. Your selection stays fixed as recording continues.';
+
+  @override
+  String get bufferRangeStart => 'Start time';
+
+  @override
+  String get bufferRangeEnd => 'End time';
+
+  @override
+  String get bufferRangeInvalid =>
+      'Enter a range of at least 1 second within the buffer. Minutes and seconds must be 0–59.';
+
+  @override
+  String get bufferRangeEmpty =>
+      'At least 1 second of buffered audio is needed.';
+
+  @override
+  String get bufferRangeUnavailable =>
+      'Unable to read the buffer. Please try again.';
+
+  @override
+  String get bufferRangeExpired =>
+      'The selected audio has changed or expired. Please select a new range.';
+
+  @override
+  String get saveSelectedRange => 'Save selection';
+
+  @override
+  String get startupTitle => 'Launch at startup';
+
+  @override
+  String get startupTasks => 'Startup actions';
+
+  @override
+  String get startupWindowsHelp =>
+      'Open EchoClip after signing in to Windows and run enabled startup tasks.';
+
+  @override
+  String get startupAndroidHelp =>
+      'Launch at startup is not supported on this platform yet.';
+
+  @override
+  String get startupTasksHelp =>
+      'Apply these recording and upload settings immediately after startup. Changes are saved automatically for the next startup.';
+
+  @override
+  String get startupDelay => 'Delay after startup';
+
+  @override
+  String get startupDelayHelp =>
+      'Set to 0 seconds to run immediately after startup.';
+
+  @override
+  String get startupEmpty => 'No startup tasks';
+
+  @override
+  String get startupPermission =>
+      'Allow notifications to show the startup shortcut after boot.';
+
+  @override
+  String get startupFailed =>
+      'Could not save startup settings. Please try again.';
+
+  @override
+  String get recordingVolume => 'Recording volume';
+
+  @override
+  String get volumeSaveFailed => 'Could not save volume. Please try again.';
+
+  @override
+  String get timeHoursShort => 'h';
+
+  @override
+  String get timeMinutesShort => 'min';
+
+  @override
+  String get timeSecondsShort => 's';
+
+  @override
+  String get volumeInvalid => 'Enter a whole number from 0 to 300.';
+
+  @override
+  String get startupRecording => 'Recording';
+
+  @override
+  String get startupRecordingHelp =>
+      'Start recording after startup when enabled; otherwise keep recording stopped.';
+
+  @override
+  String get startupUpload => 'Live upload';
+
+  @override
+  String get startupUploadHelp =>
+      'Enable live upload after startup. Uses your saved server settings.';
+
+  @override
+  String get softwareVersion => 'Version';
+
+  @override
+  String get chooseRecordingFolderFirst =>
+      'Choose a recording folder before starting. Saved recordings will be placed there.';
+
+  @override
+  String get startupUnsupported =>
+      'Launch at startup is not supported on this platform yet.';
+
+  @override
+  String get startupSilent => 'Start silently';
+
+  @override
+  String get startupSilentHelp =>
+      'Keep the window hidden in the system tray when launched at startup. Requires launch at startup.';
+
+  @override
+  String get saveFormat => 'Save format';
+
+  @override
+  String get saveFormatHelp =>
+      'MP3 is the default. Applies to manual saves; scheduled tasks use their own output format.';
+
+  @override
+  String get wavSaveLimit =>
+      'A WAV recording cannot exceed 4 GB. Each save is limited to 4 hours.';
+
+  @override
+  String get exportSettingsFailed =>
+      'Could not save the format setting. Please try again.';
 }

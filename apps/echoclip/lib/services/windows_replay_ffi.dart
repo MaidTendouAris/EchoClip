@@ -32,6 +32,21 @@ typedef _SaveLatestNative =
     Int32 Function(Uint64, Uint32, Int32, Uint32, Pointer<Utf8>, Pointer<Utf8>);
 typedef _SaveLatestDart =
     int Function(int, int, int, int, Pointer<Utf8>, Pointer<Utf8>);
+typedef _SaveRangeNative =
+    Int32 Function(
+      Uint64,
+      Pointer<Utf8>,
+      Int32,
+      Uint32,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+    );
+typedef _SaveRangeDart =
+    int Function(int, Pointer<Utf8>, int, int, Pointer<Utf8>, Pointer<Utf8>);
+typedef _SetStartupNative = Int32 Function(Uint64, Int32, Pointer<Utf8>);
+typedef _SetStartupDart = int Function(int, int, Pointer<Utf8>);
+typedef _SetGainsNative = Int32 Function(Uint64, Uint32, Uint32);
+typedef _SetGainsDart = int Function(int, int, int);
 typedef _ClearNative = Int32 Function(Uint64);
 typedef _ClearDart = int Function(int);
 typedef _StatusNative = Int32 Function(Uint64);
@@ -111,6 +126,24 @@ final class WindowsReplayFfi {
       _saveLatest = library.lookupFunction<_SaveLatestNative, _SaveLatestDart>(
         'ec_save_latest',
       ),
+      _saveRange = library.lookupFunction<_SaveRangeNative, _SaveRangeDart>(
+        'ec_save_range',
+      ),
+      _bufferWindow = library
+          .lookupFunction<_StatusJsonNative, _StatusJsonDart>(
+            'ec_buffer_window_json',
+          ),
+      _setStartup = library.lookupFunction<_SetStartupNative, _SetStartupDart>(
+        'ec_set_startup',
+      ),
+      _startupRegistered = library
+          .lookupFunction<
+            _SchedulerStringCommandNative,
+            _SchedulerStringCommandDart
+          >('ec_is_startup_registered'),
+      _setGains = library.lookupFunction<_SetGainsNative, _SetGainsDart>(
+        'ec_set_capture_gains',
+      ),
       _clear = library.lookupFunction<_ClearNative, _ClearDart>('ec_clear'),
       _status = library.lookupFunction<_StatusNative, _StatusDart>('ec_status'),
       _statusJson = library.lookupFunction<_StatusJsonNative, _StatusJsonDart>(
@@ -171,6 +204,11 @@ final class WindowsReplayFfi {
   final _AvailableMillisDart _availableMillis;
   final _SaveLatestWavDart _saveLatestWav;
   final _SaveLatestDart _saveLatest;
+  final _SaveRangeDart _saveRange;
+  final _StatusJsonDart _bufferWindow;
+  final _SetStartupDart _setStartup;
+  final _SchedulerStringCommandDart _startupRegistered;
+  final _SetGainsDart _setGains;
   final _ClearDart _clear;
   final _StatusDart _status;
   final _StatusJsonDart _statusJson;
@@ -364,7 +402,8 @@ final class WindowsReplayFfi {
   }
 
   /// Exports the most recent buffer to `outputPath` with the requested
-  /// [format] (0 = wav, 1 = mp3). For mp3 exports [ffmpegPath] is required and
+  /// [format] (0 = wav, 1 = mp3, 2 = flac, 3 = ogg, 4 = m4a, 5 = aac).
+  /// Except for legacy WAV exports without FFmpeg, [ffmpegPath] is required and
   /// [mp3BitrateKbps] is honored; for wav exports FFmpeg is ignored.
   int saveLatestCode(
     int handle,
@@ -373,6 +412,7 @@ final class WindowsReplayFfi {
     int format = 0,
     int mp3BitrateKbps = 128,
     String? ffmpegPath,
+    Map<String, Object?>? range,
   }) {
     final normalizedFfmpegPath = ffmpegPath?.trim();
     final outputPathUtf8 = outputPath.toNativeUtf8(allocator: calloc);
@@ -380,7 +420,20 @@ final class WindowsReplayFfi {
         normalizedFfmpegPath == null || normalizedFfmpegPath.isEmpty
         ? nullptr
         : normalizedFfmpegPath.toNativeUtf8(allocator: calloc);
+    final rangeUtf8 = range == null
+        ? nullptr
+        : jsonEncode(range).toNativeUtf8(allocator: calloc);
     try {
+      if (range != null) {
+        return _saveRange(
+          handle,
+          rangeUtf8,
+          format,
+          mp3BitrateKbps,
+          ffmpegPathUtf8,
+          outputPathUtf8,
+        );
+      }
       return _saveLatest(
         handle,
         seconds,
@@ -390,12 +443,16 @@ final class WindowsReplayFfi {
         outputPathUtf8,
       );
     } finally {
+      if (rangeUtf8 != nullptr) calloc.free(rangeUtf8);
       calloc.free(outputPathUtf8);
       if (ffmpegPathUtf8 != nullptr) {
         calloc.free(ffmpegPathUtf8);
       }
     }
   }
+
+  int setGainsCode(int handle, int microphone, int system) =>
+      _setGains(handle, microphone, system);
 
   int clearCode(int handle) => _clear(handle);
 
@@ -439,15 +496,49 @@ final class WindowsReplayFfi {
     }
   }
 
-  Map<String, Object?> statusJson(int handle) {
-    var capacity = _statusJson(handle, nullptr, 0);
+  int setStartupCode(
+    int handle,
+    bool enabled,
+    String executable, {
+    bool silent = false,
+  }) {
+    final exe = executable.toNativeUtf8(allocator: calloc);
+    try {
+      return _setStartup(handle, enabled ? (silent ? 2 : 1) : 0, exe);
+    } finally {
+      calloc.free(exe);
+    }
+  }
+
+  bool isStartupRegistered(int handle, String executable) {
+    final exe = executable.toNativeUtf8(allocator: calloc);
+    try {
+      final result = _startupRegistered(handle, exe);
+      if (result < 0) {
+        throw WindowsReplayFfiException(
+          'ec_is_startup_registered',
+          coreError,
+          lastError(handle),
+        );
+      }
+      return result == 1;
+    } finally {
+      calloc.free(exe);
+    }
+  }
+
+  Map<String, Object?> bufferWindowJson(int handle) =>
+      _readJson(handle, _bufferWindow);
+  Map<String, Object?> statusJson(int handle) => _readJson(handle, _statusJson);
+  Map<String, Object?> _readJson(int handle, _StatusJsonDart read) {
+    var capacity = read(handle, nullptr, 0);
     for (var attempt = 0; attempt < 4; attempt += 1) {
       if (capacity <= 1) {
         break;
       }
       final buffer = calloc<Uint8>(capacity);
       try {
-        final required = _statusJson(handle, buffer, capacity);
+        final required = read(handle, buffer, capacity);
         if (required <= 1) {
           break;
         }

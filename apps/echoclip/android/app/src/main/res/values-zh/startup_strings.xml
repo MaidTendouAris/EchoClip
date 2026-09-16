@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="startup_channel">启动任务</string>
+    <string name="startup_ready">EchoClip 已准备就绪</string>
+    <string name="startup_open">点击打开应用并执行启动任务</string>
+</resources>

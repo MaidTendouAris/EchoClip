@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show exit;
 import 'dart:math' as math;
+import 'dart:ui' show SemanticsRole;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -25,9 +26,13 @@ part 'widgets/loudness_meter.dart';
 part 'pages/library_page.dart';
 part 'pages/scheduled_tasks_page.dart';
 part 'pages/settings_page.dart';
+part 'pages/startup_tasks_page.dart';
 part 'pages/server_settings_page.dart';
 part 'widgets/shared_widgets.dart';
+part 'widgets/app_menu.dart';
 
+const recordingExportFormats = ['mp3', 'flac', 'ogg', 'wav', 'm4a', 'aac'];
+bool _startHidden = false;
 bool _windowsDesktopPluginsReady = false;
 
 const Size _desktopInitialWindowSize = Size(1080, 720);
@@ -51,8 +56,14 @@ Size constrainDesktopWindowSize(Size size) {
   return Size(width, height);
 }
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  _startHidden = args.contains("--autostart") && args.contains("--silent");
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    WindowsReplayService.instance.launchedAtStartup = args.contains(
+      '--autostart',
+    );
+  }
   if (_isDesktopPlatform) {
     await windowManager.ensureInitialized();
     await windowManager.waitUntilReadyToShow(
@@ -67,8 +78,10 @@ Future<void> main() async {
         if (_isWindows) {
           await windowManager.setPreventClose(true);
         }
-        await windowManager.show();
-        await windowManager.focus();
+        if (!_startHidden) {
+          await windowManager.show();
+          await windowManager.focus();
+        }
       },
     );
     _windowsDesktopPluginsReady = _isWindows;
@@ -250,6 +263,7 @@ class _EchoClipHomeState extends State<EchoClipHome>
   String? _folderUri;
   int _sampleRate = 16000;
   int _bufferSeconds = 1800;
+  String _exportFormat = "mp3";
   List<AudioInputDevice> _audioInputDevices = const [];
   bool _microphoneEnabled = true;
   bool _systemAudioEnabled = false;
@@ -353,9 +367,8 @@ class _EchoClipHomeState extends State<EchoClipHome>
         keyDownHandler: (_) => unawaited(_saveRecentFromHotKey()),
       );
     } on PlatformException catch (error) {
-      if (!mounted) {
-        return;
-      }
+      if (_startHidden) await _showWindowsWindow();
+      if (!mounted) return;
       setState(() {
         _platformStatus = context.l10n.serviceError(error.code);
       });
@@ -516,6 +529,7 @@ class _EchoClipHomeState extends State<EchoClipHome>
   }
 
   Future<void> _refreshAfterResume() async {
+    await _consumeStartupTasks();
     await _refreshReplayStatus();
     await _refreshRecordingFolder();
     await _loadAudioSourceSettings();
@@ -530,7 +544,8 @@ class _EchoClipHomeState extends State<EchoClipHome>
       return;
     }
 
-    await _refreshRecordingFolder(promptIfMissing: true);
+    await _refreshRecordingFolder();
+    await _loadExportSettings();
     await _loadAudioSettings();
     await _loadAudioSourceSettings();
     final serverSettings = await _loadServerSyncSettings();
@@ -540,8 +555,42 @@ class _EchoClipHomeState extends State<EchoClipHome>
     await _loadRecordingModeSettings();
     await _loadCacheStatus();
     await _loadRecordings();
+    await _consumeStartupTasks();
     await _loadScheduleSnapshot();
     await _refreshReplayStatus();
+  }
+
+  bool _consumingStartup = false;
+  Future<void> _consumeStartupTasks() async {
+    if (_consumingStartup) return;
+    _consumingStartup = true;
+    try {
+      await _replayClient.consumeStartupTasks();
+    } catch (_) {
+    } finally {
+      _consumingStartup = false;
+    }
+  }
+
+  Future<void> _openStartupTasks() async {
+    await Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute(builder: (_) => const StartupTasksPage()));
+    await _loadScheduleSnapshot();
+  }
+
+  Future<void> _loadExportSettings() async {
+    final format = await _replayClient.getExportFormat();
+    if (mounted) setState(() => _exportFormat = format);
+  }
+
+  Future<void> _setExportFormat(String format) async {
+    try {
+      final saved = await _replayClient.setExportFormat(format);
+      if (mounted) setState(() => _exportFormat = saved);
+    } on PlatformException {
+      if (mounted) _showCurrentPageSnackBar(context.l10n.exportSettingsFailed);
+    }
   }
 
   Future<void> _loadAudioSettings() async {
@@ -836,7 +885,7 @@ class _EchoClipHomeState extends State<EchoClipHome>
     }
   }
 
-  Future<void> _refreshRecordingFolder({bool promptIfMissing = false}) async {
+  Future<void> _refreshRecordingFolder() async {
     if (!_supportsReplayPlatform) {
       return;
     }
@@ -851,10 +900,6 @@ class _EchoClipHomeState extends State<EchoClipHome>
       _folderSelected = selected;
       _folderUri = response.uri;
     });
-
-    if (!selected && promptIfMissing) {
-      await _chooseRecordingFolder();
-    }
   }
 
   Future<void> _chooseRecordingFolder() async {
@@ -997,10 +1042,8 @@ class _EchoClipHomeState extends State<EchoClipHome>
       final snapshot = _meterSnapshot.value;
       if (snapshot.running) {
         _meterSnapshot.value = snapshot.copyWith(
-          recordedMillis: math.min(
-            snapshot.recordedMillis + 50,
-            _bufferSeconds * 1000,
-          ),
+          // Buffer duration follows committed PCM and whole-segment eviction.
+          // Only the session stopwatch is interpolated between native polls.
           sessionRecordedMillis: snapshot.sessionRecordedMillis + 50,
         );
       }
@@ -1098,6 +1141,24 @@ class _EchoClipHomeState extends State<EchoClipHome>
     }
 
     if (!_recordingControlActive && !_folderSelected) {
+      final choose = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(context.l10n.recordingFolder),
+          content: Text(context.l10n.chooseRecordingFolderFirst),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(context.l10n.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(context.l10n.chooseFolder),
+            ),
+          ],
+        ),
+      );
+      if (choose != true || !mounted) return;
       await _chooseRecordingFolder();
       if (!_folderSelected) {
         return;
@@ -1196,12 +1257,19 @@ class _EchoClipHomeState extends State<EchoClipHome>
     }
   }
 
-  Future<void> _saveClip(int seconds) async {
+  Future<void> _saveClip(int seconds, {BufferSelection? range}) async {
     if (_saveProgress.busy) {
       await _cancelManualSave();
       return;
     }
     if (_supportsReplayPlatform) {
+      if (_exportFormat == 'wav' && (range?.duration ?? seconds) > 14400) {
+        _showSaveFeedback(
+          ClipSaveOutcome.failed,
+          detail: context.l10n.wavSaveLimit,
+        );
+        return;
+      }
       if (!_folderSelected) {
         await _chooseRecordingFolder();
         if (!_folderSelected || !mounted) return;
@@ -1214,7 +1282,9 @@ class _EchoClipHomeState extends State<EchoClipHome>
         _saveProgress = ClipSaveProgress(busy: true, cancellable: cancellable);
       });
       try {
-        final response = await _replayClient.saveReplayClip(seconds);
+        final response = range == null
+            ? await _replayClient.saveReplayClip(seconds)
+            : await _replayClient.saveBufferRange(range);
         if (!mounted) return;
         if (!response.saved) {
           _showSaveFeedback(
@@ -1717,7 +1787,7 @@ class _EchoClipHomeState extends State<EchoClipHome>
     final l10n = context.l10n;
     final compact =
         !_isDesktopPlatform && MediaQuery.sizeOf(context).width < 520;
-    return PopupMenuButton<RecordingMode>(
+    return AppMenuButton<RecordingMode>(
       key: const ValueKey('recording.modeMenu'),
       initialValue: _recordingMode,
       enabled: !_recordingCommandInFlight,
@@ -1725,7 +1795,7 @@ class _EchoClipHomeState extends State<EchoClipHome>
       onSelected: _setRecordingMode,
       itemBuilder: (context) => [
         for (final mode in RecordingMode.values)
-          PopupMenuItem(
+          AppMenuItem(
             value: mode,
             child: Text(_recordingModeLabel(l10n, mode)),
           ),
@@ -1890,10 +1960,13 @@ class _EchoClipHomeState extends State<EchoClipHome>
   Widget build(BuildContext context) {
     final content = switch (_section) {
       AppSection.recorder => RecorderPage(
+        onGetBufferWindow: _replayClient.getBufferWindow,
+        onSaveRange: (range) => _saveClip(range.duration.ceil(), range: range),
         isBuffering: _isBuffering,
         platformStatus: _platformStatus,
         meterSnapshot: _meterSnapshot,
         folderSelected: _folderSelected,
+        exportFormat: _exportFormat,
         onSave: _saveClip,
         saveProgress: _saveProgress,
         saveOutcome: _saveOutcome,
@@ -1937,7 +2010,10 @@ class _EchoClipHomeState extends State<EchoClipHome>
         onRequestExactAlarm: _requestExactAlarmPermission,
       ),
       AppSection.settings => SettingsPage(
+        onOpenStartupTasks: _openStartupTasks,
         folderUri: _folderUri,
+        exportFormat: _exportFormat,
+        onExportFormatChanged: _setExportFormat,
         sampleRate: _sampleRate,
         bufferSeconds: _bufferSeconds,
         audioInputDevices: _audioInputDevices,
@@ -1983,25 +2059,20 @@ class _EchoClipHomeState extends State<EchoClipHome>
 
     return Scaffold(
       backgroundColor: const Color(0xFFF6F8F7),
-      appBar: _isDesktopPlatform
-          ? AppBar(
-              title: Text(context.l10n.appTitle),
-              centerTitle: false,
-              backgroundColor: const Color(0xFFF6F8F7),
-              surfaceTintColor: Colors.transparent,
-              scrolledUnderElevation: 0,
-            )
-          : null,
       body: SafeArea(
         child: useDesktopNavigation
             ? Row(
                 children: [
                   _DesktopNavigation(
                     key: _desktopNavigationKey,
+                    showBrand: _isDesktopPlatform,
                     selectedIndex: _section.index,
                     onDestinationSelected: _selectSection,
                   ),
-                  const VerticalDivider(width: 1),
+                  const VerticalDivider(
+                    key: ValueKey('navigation.divider'),
+                    width: 1,
+                  ),
                   Expanded(child: page),
                 ],
               )
@@ -2046,10 +2117,12 @@ class _EchoClipHomeState extends State<EchoClipHome>
 class _DesktopNavigation extends StatelessWidget {
   const _DesktopNavigation({
     super.key,
+    required this.showBrand,
     required this.selectedIndex,
     required this.onDestinationSelected,
   });
 
+  final bool showBrand;
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
 
@@ -2061,25 +2134,46 @@ class _DesktopNavigation extends StatelessWidget {
       width: _desktopNavigationWidth,
       child: Material(
         color: colors.surfaceContainerLowest,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final (index, section) in AppSection.values.indexed)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _DesktopNavigationDestination(
-                    key: ValueKey<String>('navigation.desktop.${section.name}'),
-                    icon: section.icon,
-                    selectedIcon: _selectedIconFor(section),
-                    label: _sectionLabel(context, section),
-                    selected: index == selectedIndex,
-                    onTap: () => onDestinationSelected(index),
-                  ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showBrand)
+              SizedBox(
+                height: kToolbarHeight,
+                child: AppBar(
+                  title: Text(context.l10n.appTitle),
+                  automaticallyImplyLeading: false,
+                  centerTitle: false,
+                  backgroundColor: const Color(0xFFF6F8F7),
+                  surfaceTintColor: Colors.transparent,
+                  scrolledUnderElevation: 0,
                 ),
-            ],
-          ),
+              ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final (index, section) in AppSection.values.indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _DesktopNavigationDestination(
+                          key: ValueKey<String>(
+                            'navigation.desktop.${section.name}',
+                          ),
+                          icon: section.icon,
+                          selectedIcon: _selectedIconFor(section),
+                          label: _sectionLabel(context, section),
+                          selected: index == selectedIndex,
+                          onTap: () => onDestinationSelected(index),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

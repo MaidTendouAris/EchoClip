@@ -74,6 +74,12 @@ object RustAudioCore {
         return RustRecorderStatus.fromJson(json)
     }
 
+    fun bufferWindow(handle: Long): Map<String, Any?> {
+        val json = JSONObject(nativeBufferWindowJson(handle))
+        require(!json.has("error")) { json.optString("error") }
+        return json.keys().asSequence().associateWith { json.get(it) }
+    }
+
     fun saveLatestToCache(
         handle: Long,
         seconds: Int,
@@ -81,12 +87,14 @@ object RustAudioCore {
         format: String,
         mp3BitrateKbps: Int,
         ffmpegPath: String?,
+        rangeJson: String? = null,
     ): Long {
         if (!nativeAvailable || handle == 0L) {
             return 0L
         }
         return runCatching {
-            nativeSaveLatestToCache(
+            if (rangeJson != null) nativeSaveRangeToCache(handle, rangeJson, outputPath,
+                format, mp3BitrateKbps, ffmpegPath.orEmpty()) else nativeSaveLatestToCache(
                 handle,
                 seconds,
                 outputPath,
@@ -250,6 +258,9 @@ object RustAudioCore {
         mp3BitrateKbps: Int,
         ffmpegPath: String,
     ): Long
+    private external fun nativeBufferWindowJson(handle: Long): String
+    private external fun nativeSaveRangeToCache(handle: Long, rangeJson: String, outputPath: String,
+        format: String, mp3BitrateKbps: Int, ffmpegPath: String): Long
     private external fun nativeStatusJson(handle: Long): String
     private external fun nativeExportStatusJson(handle: Long, jobId: Long): String
     private external fun nativeCancelExport(handle: Long, jobId: Long): Int

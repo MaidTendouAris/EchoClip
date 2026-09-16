@@ -25,12 +25,18 @@ class RecorderPage extends StatefulWidget {
     required this.folderSelected,
     required this.onSave,
     required this.onChooseFolder,
+    this.onGetBufferWindow,
+    this.exportFormat = "mp3",
+    this.onSaveRange,
     this.headerActions = const [],
     this.saveProgress = const ClipSaveProgress(),
     this.saveOutcome,
     this.saveErrorDetail,
   });
 
+  final String exportFormat;
+  final Future<BufferWindow> Function()? onGetBufferWindow;
+  final Future<void> Function(BufferSelection)? onSaveRange;
   final List<Widget> headerActions;
   final ClipSaveProgress saveProgress;
   final ClipSaveOutcome? saveOutcome;
@@ -57,6 +63,7 @@ class _RecorderPageState extends State<RecorderPage> {
     SaveDurationOption(1800),
     SaveDurationOption(3600),
     SaveDurationOption(7200),
+    SaveDurationOption(14400),
     SaveDurationOption(18000),
     SaveDurationOption(43200),
     SaveDurationOption(86400),
@@ -64,12 +71,26 @@ class _RecorderPageState extends State<RecorderPage> {
 
   SaveDurationOption _selectedDuration = _durations[1];
   SaveDurationMode _durationMode = SaveDurationMode.preset;
-  int _customDurationSeconds = 30;
+  BufferSelection? _selection;
+  bool _loadingRange = false;
+  int get _maxSaveSeconds => widget.exportFormat == 'wav' ? 14400 : 86400;
+
+  @override
+  void didUpdateWidget(covariant RecorderPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_activeSaveSeconds > _maxSaveSeconds) {
+      _selectedDuration = _durations.firstWhere(
+        (value) => value.seconds == _maxSaveSeconds,
+      );
+      _durationMode = SaveDurationMode.preset;
+      _selection = null;
+    }
+  }
 
   int get _activeSaveSeconds {
     return switch (_durationMode) {
       SaveDurationMode.preset => _selectedDuration.seconds,
-      SaveDurationMode.custom => _customDurationSeconds,
+      SaveDurationMode.custom => _selection?.duration.ceil() ?? 1,
     };
   }
 
@@ -151,15 +172,51 @@ class _RecorderPageState extends State<RecorderPage> {
       });
       return;
     }
-    final custom = await showDialog<int>(
-      context: context,
-      builder: (_) => _SaveDurationDialog(seconds: _customDurationSeconds),
-    );
-    if (!mounted || custom == null) return;
-    setState(() {
-      _customDurationSeconds = custom;
-      _durationMode = SaveDurationMode.custom;
-    });
+    if (_loadingRange) return;
+    setState(() => _loadingRange = true);
+    try {
+      final window =
+          await (widget.onGetBufferWindow?.call() ??
+              const ReplayServiceClient().getBufferWindow());
+      if (!mounted) return;
+      if (window.duration.floor() < 1) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(context.l10n.bufferRangeEmpty)));
+        return;
+      }
+      final selected = await showDialog<BufferSelection>(
+        context: context,
+        builder: (_) => BufferRangeDialog(
+          window: window,
+          maxSelectionSeconds: _maxSaveSeconds,
+        ),
+      );
+      if (!mounted || selected == null) return;
+      setState(() {
+        _selection = selected;
+        _durationMode = SaveDurationMode.custom;
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(context.l10n.bufferRangeUnavailable)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingRange = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (!widget.saveProgress.busy &&
+        _durationMode == SaveDurationMode.custom &&
+        _selection != null) {
+      await (widget.onSaveRange?.call(_selection!) ??
+          Future<void>.error(StateError('range_export_unavailable')));
+    } else {
+      await widget.onSave(_activeSaveSeconds);
+    }
   }
 
   Widget _buildSaveControls(AppLocalizations l10n) {
@@ -189,21 +246,23 @@ class _RecorderPageState extends State<RecorderPage> {
           builder: (context, constraints) {
             final duration = SizedBox(
               height: height,
-              child: PopupMenuButton<int>(
+              child: AppMenuButton<int>(
                 key: const ValueKey('save.duration'),
-                enabled: !saving.busy,
+                enabled: !saving.busy && !_loadingRange,
                 tooltip: l10n.chooseSaveDuration,
-                position: PopupMenuPosition.under,
+                matchAnchorWidth: true,
                 onSelected: _chooseSaveDuration,
                 itemBuilder: (_) => [
-                  CheckedPopupMenuItem(
+                  AppMenuItem(
                     value: -1,
                     checked: _durationMode == SaveDurationMode.custom,
                     child: Text(l10n.customSaveDuration),
                   ),
                   const PopupMenuDivider(),
-                  for (final option in _durations)
-                    CheckedPopupMenuItem(
+                  for (final option in _durations.where(
+                    (option) => option.seconds <= _maxSaveSeconds,
+                  ))
+                    AppMenuItem(
                       value: option.seconds,
                       checked:
                           _durationMode == SaveDurationMode.preset &&
@@ -211,7 +270,7 @@ class _RecorderPageState extends State<RecorderPage> {
                       child: Text(_formatDurationLabel(l10n, option.seconds)),
                     ),
                 ],
-                child: Ink(
+                childBuilder: (context, open) => Ink(
                   decoration: BoxDecoration(
                     color: const Color(0xFFF6F8F7),
                     borderRadius: BorderRadius.circular(12),
@@ -228,7 +287,10 @@ class _RecorderPageState extends State<RecorderPage> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          _formatDurationLabel(l10n, _activeSaveSeconds),
+                          _durationMode == SaveDurationMode.custom &&
+                                  _selection != null
+                              ? '${_rangeTime(_selection!.start)} – ${_rangeTime(_selection!.end)}'
+                              : _formatDurationLabel(l10n, _activeSaveSeconds),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -238,7 +300,7 @@ class _RecorderPageState extends State<RecorderPage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      const Icon(Icons.keyboard_arrow_down, size: 20),
+                      AppMenuChevron(open: open),
                     ],
                   ),
                 ),
@@ -263,11 +325,9 @@ class _RecorderPageState extends State<RecorderPage> {
                     ),
                   ),
                   onPressed: saving.busy
-                      ? (saving.cancellable && !saving.canceling
-                            ? () => widget.onSave(_activeSaveSeconds)
-                            : null)
+                      ? (saving.cancellable && !saving.canceling ? _save : null)
                       : widget.folderSelected && snapshot.recordedMillis > 0
-                      ? () => widget.onSave(_activeSaveSeconds)
+                      ? _save
                       : null,
                   icon: saving.busy
                       ? SizedBox(
@@ -292,6 +352,8 @@ class _RecorderPageState extends State<RecorderPage> {
                                       1.5
                               ? l10n.cancel
                               : busyLabel)
+                        : _durationMode == SaveDurationMode.custom
+                        ? l10n.saveSelectedRange
                         : l10n.saveClip(
                             _formatDurationLabel(l10n, _activeSaveSeconds),
                           ),
@@ -352,7 +414,10 @@ class _SaveStatusLabel extends StatelessWidget {
     final message = switch (outcome) {
       ClipSaveOutcome.saved => l10n.clipSaved,
       ClipSaveOutcome.canceled => l10n.saveCanceled,
-      ClipSaveOutcome.failed => l10n.saveFailedStatus,
+      ClipSaveOutcome.failed =>
+        errorDetail?.contains('BUFFER_RANGE_EXPIRED') == true
+            ? l10n.bufferRangeExpired
+            : l10n.saveFailedStatus,
       ClipSaveOutcome.cancelFailed => l10n.saveCancelFailedStatus,
       null =>
         progress.canceling
@@ -378,7 +443,8 @@ class _SaveStatusLabel extends StatelessWidget {
     final style = Theme.of(
       context,
     ).textTheme.labelLarge?.copyWith(fontSize: 14, height: 1.4, color: color);
-    final description = errorDetail == null
+    final description =
+        errorDetail == null || errorDetail!.contains('BUFFER_RANGE_EXPIRED')
         ? message
         : '$message\n${l10n.saveError(errorDetail!)}';
     return Semantics(
@@ -426,62 +492,281 @@ class _SaveStatusLabel extends StatelessWidget {
   }
 }
 
-class _SaveDurationDialog extends StatefulWidget {
-  const _SaveDurationDialog({required this.seconds});
-  final int seconds;
-  @override
-  State<_SaveDurationDialog> createState() => _SaveDurationDialogState();
+String _rangeTime(double value) {
+  final seconds = value.floor();
+  return [
+    seconds ~/ 3600,
+    seconds ~/ 60 % 60,
+    seconds % 60,
+  ].map((part) => part.toString().padLeft(2, '0')).join(':');
 }
 
-class _SaveDurationDialogState extends State<_SaveDurationDialog> {
-  final _form = GlobalKey<FormState>();
-  late final _controller = TextEditingController(text: '${widget.seconds}');
+class BufferRangeDialog extends StatefulWidget {
+  const BufferRangeDialog({
+    super.key,
+    required this.window,
+    this.maxSelectionSeconds = 86400,
+  });
+  final int maxSelectionSeconds;
+  final BufferWindow window;
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  State<BufferRangeDialog> createState() => _BufferRangeDialogState();
+}
+
+class _BufferRangeDialogState extends State<BufferRangeDialog> {
+  late RangeValues _values;
+  late final List<TextEditingController> _start, _end;
+  bool _invalid = false;
+  int get _maxSeconds => widget.window.duration.floor();
+
+  @override
+  void initState() {
+    super.initState();
+    _values = RangeValues(
+      math.max(0, _maxSeconds - widget.maxSelectionSeconds).toDouble(),
+      _maxSeconds.toDouble(),
+    );
+    _start = List.generate(3, (_) => TextEditingController());
+    _end = List.generate(3, (_) => TextEditingController());
+    _writeFields();
   }
 
-  void _apply() {
-    if (_form.currentState!.validate()) {
-      Navigator.of(context).pop(int.parse(_controller.text));
+  void _writeFields() {
+    for (final (fields, seconds) in [
+      (_start, _values.start),
+      (_end, _values.end),
+    ]) {
+      final parts = _rangeTime(seconds).split(':');
+      for (var i = 0; i < 3; i++) {
+        fields[i].text = parts[i];
+      }
     }
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(context.l10n.customSaveDuration),
-    content: Form(
-      key: _form,
-      child: TextFormField(
-        key: const ValueKey('save.customSeconds'),
-        controller: _controller,
-        autofocus: true,
-        keyboardType: TextInputType.number,
-        textInputAction: TextInputAction.done,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        onFieldSubmitted: (_) => _apply(),
-        validator: (value) {
-          final seconds = int.tryParse(value ?? '');
-          return seconds == null || seconds < 1 || seconds > 86400
-              ? context.l10n.customSaveSecondsHelper
-              : null;
-        },
-        decoration: InputDecoration(
-          labelText: context.l10n.customSaveSeconds,
-          helperText: context.l10n.customSaveSecondsHelper,
-          border: const OutlineInputBorder(),
+  void dispose() {
+    for (final field in [..._start, ..._end]) {
+      field.dispose();
+    }
+    super.dispose();
+  }
+
+  int? _seconds(List<TextEditingController> fields) {
+    final parts = fields
+        .map((field) => int.tryParse(field.text.trim()))
+        .toList();
+    if (parts.any((part) => part == null || part < 0) ||
+        parts[1]! > 59 ||
+        parts[2]! > 59) {
+      return null;
+    }
+    return parts[0]! * 3600 + parts[1]! * 60 + parts[2]!;
+  }
+
+  bool _readFields() {
+    final start = _seconds(_start), end = _seconds(_end);
+    final valid =
+        start != null &&
+        end != null &&
+        start < end &&
+        end <= _maxSeconds &&
+        end - start <= widget.maxSelectionSeconds;
+    setState(() {
+      _invalid = !valid;
+      if (valid) {
+        _values = RangeValues(start.toDouble(), end.toDouble());
+      }
+    });
+    return valid;
+  }
+
+  void _apply() {
+    if (!_readFields()) {
+      return;
+    }
+    try {
+      Navigator.of(
+        context,
+      ).pop(widget.window.select(_values.start, _values.end));
+    } on FormatException {
+      setState(() => _invalid = true);
+    }
+  }
+
+  Widget _timeFields(
+    List<TextEditingController> fields,
+    String label,
+    String key,
+  ) {
+    final l10n = context.l10n;
+    final units = [
+      l10n.timeHoursShort,
+      l10n.timeMinutesShort,
+      l10n.timeSecondsShort,
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            for (var i = 0; i < 3; i++) ...[
+              if (i > 0)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4),
+                  child: Text(':'),
+                ),
+              Expanded(
+                child: TextField(
+                  key: ValueKey('$key.$i'),
+                  controller: fields[i],
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  textInputAction: TextInputAction.next,
+                  textAlign: TextAlign.center,
+                  onChanged: (_) => _readFields(),
+                  onSubmitted: (_) => _readFields(),
+                  decoration: InputDecoration(
+                    labelText: units[i],
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 16,
+                    ),
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return AlertDialog(
+      title: Text(l10n.bufferRange),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                l10n.bufferRangeHelp,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (widget.maxSelectionSeconds == 14400) ...[
+                const SizedBox(height: 8),
+                Text(
+                  l10n.wavSaveLimit,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              const SizedBox(height: 16),
+              RangeSlider(
+                key: const ValueKey('save.rangeSlider'),
+                values: _values,
+                min: 0,
+                max: _maxSeconds.toDouble(),
+                labels: RangeLabels(
+                  _rangeTime(_values.start),
+                  _rangeTime(_values.end),
+                ),
+                semanticFormatterCallback: _rangeTime,
+                onChanged: _maxSeconds < 1
+                    ? null
+                    : (values) {
+                        var start = values.start.round().clamp(
+                          0,
+                          _maxSeconds - 1,
+                        );
+                        var end = values.end.round().clamp(1, _maxSeconds);
+                        if (start >= end) {
+                          if (start != _values.start.round()) {
+                            start = end - 1;
+                          } else {
+                            end = start + 1;
+                          }
+                        }
+                        if (end - start > widget.maxSelectionSeconds) {
+                          if (start != _values.start.round()) {
+                            end = start + widget.maxSelectionSeconds;
+                          } else {
+                            start = end - widget.maxSelectionSeconds;
+                          }
+                        }
+                        setState(() {
+                          _values = RangeValues(
+                            start.toDouble(),
+                            end.toDouble(),
+                          );
+                          _invalid = false;
+                          _writeFields();
+                        });
+                      },
+              ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final start = _rangeTime(0);
+                  final end = _rangeTime(_maxSeconds.toDouble());
+                  final style = DefaultTextStyle.of(context).style;
+                  final painter = TextPainter(
+                    text: TextSpan(text: '$start  $end', style: style),
+                    textDirection: Directionality.of(context),
+                    textScaler: MediaQuery.textScalerOf(context),
+                  )..layout();
+                  final fits = painter.width <= constraints.maxWidth;
+                  painter.dispose();
+                  return fits
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [Text(start), Text(end)],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(start),
+                            Text(end, textAlign: TextAlign.end),
+                          ],
+                        );
+                },
+              ),
+              const SizedBox(height: 20),
+              _timeFields(_start, l10n.bufferRangeStart, 'save.rangeStart'),
+              const SizedBox(height: 20),
+              _timeFields(_end, l10n.bufferRangeEnd, 'save.rangeEnd'),
+              if (_invalid)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(
+                    l10n.bufferRangeInvalid,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: Text(context.l10n.cancel),
-      ),
-      FilledButton(onPressed: _apply, child: Text(context.l10n.ok)),
-    ],
-  );
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          key: const ValueKey('save.rangeApply'),
+          onPressed: _apply,
+          child: Text(l10n.ok),
+        ),
+      ],
+    );
+  }
 }
 
 class _RecordingTimeSummary extends StatelessWidget {

@@ -9,11 +9,14 @@ Widget shell(Widget child, {String lang = 'en', double scale = 1}) =>
       locale: Locale(lang),
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      home: MediaQuery(
-        data: MediaQueryData(textScaler: TextScaler.linear(scale)),
-        child: Scaffold(
-          body: Padding(padding: const EdgeInsets.all(20), child: child),
-        ),
+      builder: (context, body) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(scale)),
+        child: body!,
+      ),
+      home: Scaffold(
+        body: Padding(padding: const EdgeInsets.all(20), child: child),
       ),
     );
 ValueNotifier<MeterSnapshot> meter() => ValueNotifier(
@@ -29,12 +32,21 @@ ValueNotifier<MeterSnapshot> meter() => ValueNotifier(
 RecorderPage recorder(
   ValueNotifier<MeterSnapshot> signal, {
   Future<void> Function(int)? onSave,
+  Future<void> Function(BufferSelection)? onSaveRange,
 }) => RecorderPage(
   isBuffering: false,
   platformStatus: '',
   meterSnapshot: signal,
   folderSelected: true,
   onSave: onSave ?? (_) async {},
+  onSaveRange: onSaveRange,
+  onGetBufferWindow: () async => const BufferWindow(
+    bufferId: 'test',
+    sampleRate: 100,
+    channels: 1,
+    startSample: 1000,
+    endSample: 7000,
+  ),
   onChooseFolder: () async {},
 );
 Future<void> durationMenu(WidgetTester tester, int value) async {
@@ -42,9 +54,10 @@ Future<void> durationMenu(WidgetTester tester, int value) async {
   await tester.tap(find.byKey(const ValueKey('save.duration')));
   await tester.pumpAndSettle();
   final option = find.byWidgetPredicate(
-    (widget) => widget is CheckedPopupMenuItem<int> && widget.value == value,
+    (widget) => widget is AppMenuItem<int> && widget.value == value,
   );
   await tester.ensureVisible(option);
+  await tester.pumpAndSettle();
   await tester.tap(option);
   await tester.pumpAndSettle();
 }
@@ -110,23 +123,24 @@ void main() {
       }
     },
   );
-  testWidgets('custom duration validates and saves chosen seconds', (
+  testWidgets('custom range validates and exports fixed sample positions', (
     tester,
   ) async {
     final signal = meter();
     addTearDown(signal.dispose);
-    final saved = <int>[];
+    final saved = <BufferSelection>[];
     await tester.pumpWidget(
-      shell(recorder(signal, onSave: (seconds) async => saved.add(seconds))),
+      shell(recorder(signal, onSaveRange: (range) async => saved.add(range))),
     );
     await durationMenu(tester, 60);
     await durationMenu(tester, -1);
-    for (final value in ['0', '86401']) {
+    await tester.enterText(find.byKey(const ValueKey('save.rangeEnd.1')), '00');
+    for (final value in ['0', '61', '60']) {
       await tester.enterText(
-        find.byKey(const ValueKey('save.customSeconds')),
+        find.byKey(const ValueKey('save.rangeEnd.2')),
         value,
       );
-      await tester.tap(find.text('OK'));
+      await tester.tap(find.byKey(const ValueKey('save.rangeApply')));
       await tester.pump();
       expect(find.byType(AlertDialog), findsOneWidget);
     }
@@ -135,16 +149,19 @@ void main() {
     expect(find.text('Save 1 min'), findsOneWidget);
     await durationMenu(tester, -1);
     await tester.enterText(
-      find.byKey(const ValueKey('save.customSeconds')),
-      '37',
+      find.byKey(const ValueKey('save.rangeStart.2')),
+      '12',
     );
-    await tester.tap(find.text('OK'));
+    await tester.enterText(find.byKey(const ValueKey('save.rangeEnd.1')), '00');
+    await tester.enterText(find.byKey(const ValueKey('save.rangeEnd.2')), '37');
+    await tester.tap(find.byKey(const ValueKey('save.rangeApply')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const ValueKey('save.submit')));
     await tester.tap(find.byKey(const ValueKey('save.submit')));
     await tester.pump();
-    expect(saved, [37]);
-    expect(find.text('Save 37s'), findsOneWidget);
+    expect(saved.single.startSample, 2200);
+    expect(saved.single.endSample, 4700);
+    expect(find.text('Save selection'), findsOneWidget);
     await durationMenu(tester, 30);
     expect(find.text('Save 30s'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -291,7 +308,9 @@ void main() {
       const Offset(50, 0),
     );
     await tester.pump();
-    await tester.tap(find.byType(DropdownButton<double>));
+    await tester.tap(find.byKey(const ValueKey('library.speed')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('2.0x').last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('2.0x').last);
     await tester.pumpAndSettle();
@@ -319,7 +338,7 @@ void main() {
             .ancestor(
               of: find.text('Oldest first'),
               matching: find.byWidgetPredicate(
-                (widget) => widget is CheckedPopupMenuItem,
+                (widget) => widget is AppMenuItem,
               ),
             )
             .first,
@@ -333,7 +352,7 @@ void main() {
             .ancestor(
               of: find.text('File name').last,
               matching: find.byWidgetPredicate(
-                (widget) => widget is CheckedPopupMenuItem,
+                (widget) => widget is AppMenuItem,
               ),
             )
             .first,

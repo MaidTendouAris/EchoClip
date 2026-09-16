@@ -122,6 +122,10 @@ impl ScheduleTrigger {
 pub enum ScheduledExportFormat {
     Wav,
     Mp3,
+    Flac,
+    Ogg,
+    M4a,
+    Aac,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,6 +263,33 @@ pub struct DueExecution {
     pub late_by_millis: u64,
     pub actions: Vec<DueAction>,
 }
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupActions {
+    pub recording_enabled: bool,
+    pub upload_enabled: bool,
+}
+impl StartupActions {
+    fn template(self) -> SchedulePreset {
+        SchedulePreset {
+            id: "startup-actions".into(),
+            name: "EchoClip".into(),
+            enabled: true,
+            trigger: ScheduleTriggerInput::Countdown { delay_millis: 0 },
+            actions: vec![
+                ScheduledAction::SetUploadEnabled {
+                    enabled: self.upload_enabled,
+                },
+                if self.recording_enabled {
+                    ScheduledAction::StartRecording
+                } else {
+                    ScheduledAction::StopRecording
+                },
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SchedulerSnapshot {
@@ -268,6 +299,9 @@ pub struct SchedulerSnapshot {
     pub tasks: Vec<ScheduledTask>,
     pub history: Vec<ExecutionRecord>,
     pub presets: Vec<SchedulePreset>,
+    pub startup_enabled: bool,
+    pub startup_actions: StartupActions,
+    pub startup_tasks: Vec<SchedulePreset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,6 +322,16 @@ struct SchedulerFile {
     history: Vec<ExecutionRecord>,
     #[serde(default)]
     presets: Vec<SchedulePreset>,
+    #[serde(default)]
+    startup_enabled: bool,
+    #[serde(default)]
+    startup_actions: Option<StartupActions>,
+    #[serde(default)]
+    startup_tasks: Vec<SchedulePreset>,
+    #[serde(default)]
+    last_startup_token: Option<String>,
+    #[serde(default)]
+    startup_instances: std::collections::HashMap<String, String>,
 }
 impl Default for SchedulerFile {
     fn default() -> Self {
@@ -296,6 +340,11 @@ impl Default for SchedulerFile {
             tasks: Vec::new(),
             history: Vec::new(),
             presets: Vec::new(),
+            startup_enabled: false,
+            startup_actions: None,
+            startup_tasks: Vec::new(),
+            last_startup_token: None,
+            startup_instances: std::collections::HashMap::new(),
         }
     }
 }
@@ -339,7 +388,8 @@ impl Scheduler {
                 }
             }
         }
-        if scheduler.reconcile_interrupted(now_utc_millis()) {
+        let migrated = scheduler.migrate_startup_actions();
+        if scheduler.reconcile_interrupted(now_utc_millis()) || migrated {
             scheduler.persist()?;
         }
         Ok(scheduler)
@@ -357,6 +407,9 @@ impl Scheduler {
             tasks,
             history,
             presets: self.state.presets.clone(),
+            startup_enabled: self.state.startup_enabled,
+            startup_actions: self.state.startup_actions.unwrap_or_default(),
+            startup_tasks: self.state.startup_tasks.clone(),
         }
     }
     pub fn snapshot_json(&self, now: i64) -> Result<String, SchedulerError> {
@@ -369,6 +422,49 @@ impl Scheduler {
         match value.get("operation").and_then(|v| v.as_str()) {
             None => {
                 self.upsert_json(json, now)?;
+            }
+            Some("set_startup_actions") => {
+                let actions: StartupActions = serde_json::from_value(value.clone())?;
+                let previous = self.state.clone();
+                self.remove_pending_startup_instances();
+                self.state.startup_actions = Some(actions);
+                self.state.startup_tasks = vec![actions.template()];
+                if let Err(error) = self.persist() {
+                    self.state = previous;
+                    return Err(error);
+                }
+            }
+            Some("save_startup_task") => {
+                self.save_startup_task(serde_json::from_value(value["task"].clone())?, now)?;
+            }
+            Some("delete_startup_task") => {
+                let id = value["id"]
+                    .as_str()
+                    .ok_or_else(|| SchedulerError::Validation("INVALID_STARTUP_TASK".into()))?;
+                let previous = self.state.clone();
+                self.state.startup_tasks.retain(|task| task.id != id);
+                self.state.startup_instances.remove(id);
+                if let Err(error) = self.persist() {
+                    self.state = previous;
+                    return Err(error);
+                }
+            }
+            Some("set_startup_enabled") => {
+                let enabled = value["enabled"]
+                    .as_bool()
+                    .ok_or_else(|| SchedulerError::Validation("INVALID_STARTUP_ENABLED".into()))?;
+                let previous = self.state.clone();
+                self.state.startup_enabled = enabled;
+                if let Err(error) = self.persist() {
+                    self.state = previous;
+                    return Err(error);
+                }
+            }
+            Some("activate_startup_tasks") => {
+                let token = value["token"]
+                    .as_str()
+                    .ok_or_else(|| SchedulerError::Validation("INVALID_STARTUP_TOKEN".into()))?;
+                self.activate_startup_tasks(token, now)?;
             }
             Some("save_preset") => {
                 self.save_preset(serde_json::from_value(value["task"].clone())?, now)?;
@@ -387,6 +483,154 @@ impl Scheduler {
         }
         Ok(())
     }
+    fn remove_pending_startup_instances(&mut self) {
+        // Keep ordinary timers and execution history. Old delayed boot actions
+        // must not fire after the user has replaced their startup settings.
+        let ids: Vec<_> = self.state.startup_instances.values().cloned().collect();
+        self.state
+            .tasks
+            .retain(|task| !ids.contains(&task.id) || task.state == ScheduledTaskState::Running);
+        self.state.startup_instances.clear();
+    }
+
+    fn migrate_startup_actions(&mut self) -> bool {
+        if self.state.startup_actions.is_some() {
+            return false;
+        }
+        let mut actions = StartupActions::default();
+        let mut templates = self.state.startup_tasks.clone();
+        templates.sort_by_key(|task| match task.trigger {
+            ScheduleTriggerInput::Countdown { delay_millis } => delay_millis,
+            _ => 0,
+        });
+        for task in templates.iter().filter(|task| task.enabled) {
+            for action in &task.actions {
+                match action {
+                    ScheduledAction::StartRecording => actions.recording_enabled = true,
+                    ScheduledAction::StopRecording => actions.recording_enabled = false,
+                    ScheduledAction::SetUploadEnabled { enabled } => {
+                        actions.upload_enabled = *enabled
+                    }
+                    ScheduledAction::SaveRecent { .. } => {}
+                }
+            }
+        }
+        self.remove_pending_startup_instances();
+        self.state.startup_actions = Some(actions);
+        if !templates.is_empty() {
+            self.state.startup_tasks = vec![actions.template()];
+        }
+        true
+    }
+
+    pub fn save_startup_task(
+        &mut self,
+        mut input: ScheduleTaskInput,
+        now: i64,
+    ) -> Result<(), SchedulerError> {
+        let ScheduleTriggerInput::Countdown { delay_millis } = input.trigger else {
+            return Err(SchedulerError::Validation("STARTUP_COUNTDOWN_ONLY".into()));
+        };
+        // Zero is useful here: the task should run as soon as startup is ready.
+        resolve_trigger(
+            ScheduleTriggerInput::Countdown {
+                delay_millis: delay_millis.max(1),
+            },
+            false,
+            now,
+        )?;
+        input.name = self.resolve_name(&input.name, &input.name_prefix)?;
+        normalize_actions(&mut input.actions)?;
+        if input.actions.is_empty() {
+            return Err(SchedulerError::Validation(
+                "scheduled task must contain at least one action".into(),
+            ));
+        }
+        let index = input.id.as_deref().and_then(|id| {
+            self.state
+                .startup_tasks
+                .iter()
+                .position(|task| task.id == id)
+        });
+        if input.id.is_some() && index.is_none() {
+            return Err(SchedulerError::NotFound(input.id.unwrap()));
+        }
+        if index.is_none() && self.state.startup_tasks.len() >= MAX_SCHEDULED_TASKS {
+            return Err(SchedulerError::Validation(
+                "STARTUP_TASK_LIMIT_REACHED".into(),
+            ));
+        }
+        let task = SchedulePreset {
+            id: input.id.unwrap_or_else(|| new_id("startup", now)),
+            name: input.name,
+            enabled: input.enabled,
+            actions: input.actions,
+            trigger: ScheduleTriggerInput::Countdown { delay_millis },
+        };
+        let previous = self.state.clone();
+        if let Some(index) = index {
+            self.state.startup_tasks[index] = task;
+        } else {
+            self.state.startup_tasks.push(task);
+        }
+        if let Err(error) = self.persist() {
+            self.state = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Materialize enabled templates once for a platform startup event. Saving
+    /// the event token and tasks together prevents duplicate runs after retries.
+    pub fn activate_startup_tasks(&mut self, token: &str, now: i64) -> Result<(), SchedulerError> {
+        if token.is_empty() || token.len() > 200 {
+            return Err(SchedulerError::Validation("INVALID_STARTUP_TOKEN".into()));
+        }
+        if !self.state.startup_enabled || self.state.last_startup_token.as_deref() == Some(token) {
+            return Ok(());
+        }
+        let previous = self.state.clone();
+        let result = (|| {
+            if self.state.startup_tasks.is_empty() {
+                self.state.startup_tasks =
+                    vec![self.state.startup_actions.unwrap_or_default().template()];
+            }
+            let templates = self.state.startup_tasks.clone();
+            for template in templates.into_iter().filter(|task| task.enabled) {
+                let ScheduleTriggerInput::Countdown { delay_millis } = template.trigger else {
+                    return Err(SchedulerError::Validation("STARTUP_COUNTDOWN_ONLY".into()));
+                };
+                let existing = self
+                    .state
+                    .startup_instances
+                    .get(&template.id)
+                    .and_then(|id| self.state.tasks.iter().find(|task| &task.id == id))
+                    .map(|task| (task.id.clone(), task.revision));
+                let task = self.upsert_unpersisted(
+                    ScheduleTaskInput {
+                        id: existing.as_ref().map(|(id, _)| id.clone()),
+                        expected_revision: existing.map(|(_, revision)| revision),
+                        name: template.name,
+                        name_prefix: "Task".into(),
+                        enabled: true,
+                        trigger: ScheduleTriggerInput::Countdown {
+                            delay_millis: delay_millis.max(1),
+                        },
+                        actions: template.actions,
+                    },
+                    now,
+                )?;
+                self.state.startup_instances.insert(template.id, task.id);
+            }
+            self.state.last_startup_token = Some(token.into());
+            self.persist()
+        })();
+        if result.is_err() {
+            self.state = previous;
+        }
+        result
+    }
+
     pub fn save_preset(
         &mut self,
         mut input: ScheduleTaskInput,
@@ -449,6 +693,7 @@ impl Scheduler {
             validate_name(&candidate)?;
             if !self.state.tasks.iter().any(|t| t.name == candidate)
                 && !self.state.presets.iter().any(|p| p.name == candidate)
+                && !self.state.startup_tasks.iter().any(|p| p.name == candidate)
             {
                 return Ok(candidate);
             }
@@ -459,6 +704,22 @@ impl Scheduler {
         self.upsert(serde_json::from_str(json)?, now)
     }
     pub fn upsert(
+        &mut self,
+        input: ScheduleTaskInput,
+        now: i64,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        let previous = self.state.clone();
+        let result = self.upsert_unpersisted(input, now).and_then(|task| {
+            self.persist()?;
+            Ok(task)
+        });
+        if result.is_err() {
+            self.state = previous;
+        }
+        result
+    }
+
+    fn upsert_unpersisted(
         &mut self,
         mut input: ScheduleTaskInput,
         now: i64,
@@ -523,7 +784,6 @@ impl Scheduler {
         } else {
             self.state.tasks.push(task.clone());
         }
-        self.persist()?;
         Ok(task)
     }
     pub fn delete(&mut self, id: &str) -> Result<(), SchedulerError> {
@@ -836,11 +1096,17 @@ fn normalize_actions(actions: &mut Vec<ScheduledAction>) -> Result<(), Scheduler
         if let ScheduledAction::SaveRecent {
             seconds,
             mp3_bitrate_kbps,
+            format,
             ..
         } = action
         {
             if *seconds == 0 || *seconds > 86_400 {
                 return Err(SchedulerError::Validation("DURATION_OUT_OF_RANGE".into()));
+            }
+            if *format == ScheduledExportFormat::Wav && *seconds > 14_400 {
+                return Err(SchedulerError::Validation(
+                    "wav_duration_limit_4_hours".into(),
+                ));
             }
             *mp3_bitrate_kbps = sanitize_bitrate(*mp3_bitrate_kbps);
         }
@@ -961,6 +1227,176 @@ mod tests {
             actions,
         }
     }
+    #[test]
+    fn legacy_startup_migrates_actions_without_delays_or_pending_exports() {
+        let path = root("startup-migration");
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        let ordinary = scheduler
+            .upsert(input(vec![ScheduledAction::StopRecording]), 1000)
+            .unwrap();
+        let mut first = input(vec![
+            ScheduledAction::StartRecording,
+            ScheduledAction::SetUploadEnabled { enabled: true },
+        ]);
+        first.trigger = ScheduleTriggerInput::Countdown {
+            delay_millis: 20_000,
+        };
+        scheduler.save_startup_task(first, 1000).unwrap();
+        let mut second = input(vec![
+            ScheduledAction::StopRecording,
+            ScheduledAction::SaveRecent {
+                seconds: 30,
+                format: ScheduledExportFormat::Wav,
+                mp3_bitrate_kbps: 128,
+                allow_partial: true,
+            },
+        ]);
+        second.trigger = ScheduleTriggerInput::Countdown {
+            delay_millis: 40_000,
+        };
+        scheduler.save_startup_task(second, 1000).unwrap();
+        scheduler.state.startup_enabled = true;
+        scheduler.activate_startup_tasks("old-boot", 1000).unwrap();
+        let mut json = serde_json::to_value(&scheduler.state).unwrap();
+        json.as_object_mut().unwrap().remove("startupActions");
+        fs::write(&scheduler.state_path, serde_json::to_vec(&json).unwrap()).unwrap();
+        drop(scheduler);
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        let snapshot = scheduler.snapshot(1000);
+        assert_eq!(
+            snapshot.startup_actions,
+            StartupActions {
+                recording_enabled: false,
+                upload_enabled: true
+            }
+        );
+        assert_eq!(snapshot.tasks.len(), 1);
+        assert_eq!(snapshot.tasks[0].id, ordinary.id);
+        assert_eq!(
+            snapshot.startup_tasks,
+            vec![snapshot.startup_actions.template()]
+        );
+        assert!(snapshot.history.is_empty());
+        scheduler.activate_startup_tasks("new-boot", 2000).unwrap();
+        let due = scheduler.tick(2001).unwrap();
+        let boot = due
+            .iter()
+            .find(|entry| entry.task_id != ordinary.id)
+            .unwrap();
+        assert_eq!(boot.actions.len(), 2);
+        assert_eq!(
+            boot.actions[0].action,
+            ScheduledAction::SetUploadEnabled { enabled: true }
+        );
+        assert_eq!(boot.actions[1].action, ScheduledAction::StopRecording);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn simple_startup_changes_persist_without_running_and_cancel_old_pending_actions() {
+        let path = root("startup-switches");
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        let command =
+            r#"{"operation":"set_startup_actions","recordingEnabled":true,"uploadEnabled":false}"#;
+        scheduler.editor_command_json(command, 1000).unwrap();
+        assert!(scheduler.tick(1000).unwrap().is_empty());
+        assert!(scheduler.snapshot(1000).tasks.is_empty());
+        drop(scheduler);
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        assert!(scheduler.snapshot(1000).startup_actions.recording_enabled);
+        scheduler.state.startup_enabled = true;
+        scheduler.activate_startup_tasks("boot-1", 1000).unwrap();
+        assert_eq!(scheduler.snapshot(1000).tasks.len(), 1);
+        scheduler.editor_command_json(command, 1000).unwrap();
+        assert!(scheduler.tick(1002).unwrap().is_empty());
+        scheduler.activate_startup_tasks("boot-1", 1002).unwrap();
+        assert!(scheduler.snapshot(1002).tasks.is_empty());
+        scheduler.activate_startup_tasks("boot-2", 2000).unwrap();
+        assert_eq!(scheduler.tick(2001).unwrap().len(), 1);
+        let before = scheduler.snapshot(2001);
+        assert!(
+            scheduler
+                .editor_command_json(
+                    r#"{"operation":"set_startup_actions","recordingEnabled":true}"#,
+                    2001
+                )
+                .is_err()
+        );
+        assert_eq!(before, scheduler.snapshot(2001));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn startup_configuration_does_not_arm_and_boot_token_survives_reload() {
+        let path = root("startup-once");
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        let mut template = input(vec![ScheduledAction::StartRecording]);
+        template.trigger = ScheduleTriggerInput::Countdown { delay_millis: 0 };
+        scheduler.save_startup_task(template.clone(), 1000).unwrap();
+        template.name = "disabled".into();
+        template.enabled = false;
+        scheduler.save_startup_task(template, 1000).unwrap();
+        assert!(scheduler.snapshot(1000).tasks.is_empty());
+        scheduler.activate_startup_tasks("boot-1", 1000).unwrap();
+        assert!(scheduler.snapshot(1000).tasks.is_empty());
+        scheduler
+            .editor_command_json(
+                r#"{"operation":"set_startup_enabled","enabled":true}"#,
+                1000,
+            )
+            .unwrap();
+        scheduler.activate_startup_tasks("boot-1", 2000).unwrap();
+        assert_eq!(scheduler.snapshot(2000).tasks.len(), 1);
+        drop(scheduler);
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        scheduler.activate_startup_tasks("boot-1", 3000).unwrap();
+        assert_eq!(scheduler.snapshot(3000).tasks.len(), 1);
+        assert_eq!(scheduler.tick(3000).unwrap().len(), 1);
+        assert!(scheduler.tick(3000).unwrap().is_empty());
+        assert_eq!(scheduler.snapshot(3000).startup_tasks.len(), 2);
+        scheduler.activate_startup_tasks("boot-2", 4000).unwrap();
+        assert_eq!(scheduler.snapshot(4000).tasks.len(), 1);
+        assert_eq!(scheduler.tick(4001).unwrap().len(), 1);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn startup_edit_delete_and_failed_activation_are_transactional() {
+        let path = root("startup-edit");
+        let mut scheduler = Scheduler::open(&path).unwrap();
+        let mut template = input(vec![ScheduledAction::StartRecording]);
+        scheduler.save_startup_task(template.clone(), 1000).unwrap();
+        template.id = Some(scheduler.state.startup_tasks[0].id.clone());
+        template.name = "edited".into();
+        scheduler.save_startup_task(template, 1000).unwrap();
+        assert_eq!(scheduler.state.startup_tasks.len(), 1);
+        assert_eq!(scheduler.state.startup_tasks[0].name, "edited");
+        scheduler.state.startup_enabled = true;
+        for _ in 0..MAX_SCHEDULED_TASKS {
+            scheduler
+                .upsert(input(vec![ScheduledAction::StopRecording]), 1000)
+                .unwrap();
+        }
+        assert!(scheduler.activate_startup_tasks("boot-full", 1000).is_err());
+        assert!(scheduler.state.last_startup_token.is_none());
+        assert_eq!(scheduler.state.tasks.len(), MAX_SCHEDULED_TASKS);
+        let id = scheduler.state.startup_tasks[0].id.clone();
+        scheduler
+            .editor_command_json(
+                &serde_json::json!({"operation":"delete_startup_task", "id":id}).to_string(),
+                1000,
+            )
+            .unwrap();
+        assert!(
+            Scheduler::open(&path)
+                .unwrap()
+                .state
+                .startup_tasks
+                .is_empty()
+        );
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn persists_and_deduplicates_tick() {
         let path = root("scheduler");
@@ -1164,5 +1600,32 @@ mod tests {
         assert!(scheduler.upsert(time_point, 1_000).is_err());
         assert!(scheduler.snapshot(1_000).tasks.is_empty());
         fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod export_format_tests {
+    use super::*;
+    #[test]
+    fn scheduled_wav_enforces_four_hours_while_other_formats_allow_a_day() {
+        for format in [
+            ScheduledExportFormat::Wav,
+            ScheduledExportFormat::Mp3,
+            ScheduledExportFormat::Flac,
+            ScheduledExportFormat::Ogg,
+            ScheduledExportFormat::M4a,
+            ScheduledExportFormat::Aac,
+        ] {
+            let mut actions = vec![ScheduledAction::SaveRecent {
+                seconds: 14401,
+                format,
+                mp3_bitrate_kbps: 128,
+                allow_partial: true,
+            }];
+            assert_eq!(
+                normalize_actions(&mut actions).is_ok(),
+                format != ScheduledExportFormat::Wav
+            );
+        }
     }
 }

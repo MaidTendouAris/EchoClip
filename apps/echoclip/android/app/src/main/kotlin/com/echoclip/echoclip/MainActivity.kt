@@ -31,11 +31,23 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.echoclip/app_info")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "getAppVersion") {
+                    result.success(mapOf("version" to BuildConfig.VERSION_NAME,
+                        "buildNumber" to BuildConfig.VERSION_CODE.toString()))
+                } else result.notImplemented()
+            }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
+                    "getStartupSettings", "consumeStartupTasks" ->
+                        result.success(StartupCoordinator.disabledSettings(this))
+                    "setStartupEnabled", "setStartupSilent" ->
+                        result.success(StartupCoordinator.disabledSettings(this) +
+                            mapOf("ok" to false, "error" to "STARTUP_UNSUPPORTED"))
                     "getRecordingFolder" -> {
                         val uri = RecordingStorage.getRecordingFolderUri(this)
                         result.success(
@@ -45,6 +57,8 @@ class MainActivity : FlutterActivity() {
                             ),
                         )
                     }
+                    "getAudioGains" -> result.success(RecordingStorage.getAudioGains(this))
+                    "setAudioGains" -> result.success(RecordingStorage.setAudioGains(this, call.argument<Int>("microphone"), call.argument<Int>("system")) + mapOf("ok" to true))
                     "getAudioSettings" -> {
                         result.success(RecordingStorage.getAudioSettings(this).toMap())
                     }
@@ -321,6 +335,17 @@ class MainActivity : FlutterActivity() {
                         val trigger = call.argument<String>("trigger")
                         startReplay(result, mode, trigger)
                     }
+                        "getBufferWindow" -> Thread {
+                            try {
+                                val window = ClipSaveJobs.bufferWindow(applicationContext)
+                                runOnUiThread { result.success(window) }
+                            } catch (error: Exception) {
+                                runOnUiThread { result.error("buffer_unavailable", error.message, null) }
+                            }
+                        }.start()
+                        "saveBufferRange" -> result.success(ClipSaveJobs.start(this,
+                            call.argument<Int>("seconds") ?: 1,
+                            range = call.argument<Map<String, Any?>>("range")))
                         "saveReplayClip" -> {
                             val seconds = call.argument<Int>("seconds") ?: 30
                             val service = ReplayForegroundService.activeService
@@ -1004,6 +1029,10 @@ class MainActivity : FlutterActivity() {
     private fun mimeTypeForAudioFormat(format: String): String {
         return when (format.lowercase(Locale.US)) {
             "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
+            "ogg" -> "audio/ogg"
+            "m4a" -> "audio/mp4"
+            "aac" -> "audio/aac"
             else -> "audio/mpeg"
         }
     }
@@ -1160,6 +1189,7 @@ class MainActivity : FlutterActivity() {
             ".m4a",
             ".aac",
             ".flac",
+            ".ogg",
         )
         private val SUPPORTED_RECORDING_MIME_TYPES = setOf(
             "audio/mpeg",
@@ -1170,6 +1200,9 @@ class MainActivity : FlutterActivity() {
             "audio/aac",
             "audio/flac",
             "audio/x-flac",
+            "audio/ogg",
+            "application/ogg",
+            "audio/vorbis",
         )
     }
 }

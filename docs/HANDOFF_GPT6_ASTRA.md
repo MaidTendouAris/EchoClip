@@ -385,3 +385,114 @@ Android 打包不得使用 `-SkipRustBuild`。FFmpeg 未变化时可以使用 `-
 - 实际字体预览：apps/echoclip/build/qa/save-saved-*.png、save-failed-*.png、save-exporting-*.png、save-copying-*.png，覆盖手机、宽屏和 2 倍字体；完整桌面外壳继续通过布局回归。预览使用模拟数据，未进行真机安装测试。
 
 - 已完成本轮打包：Windows 安装器与便携 ZIP 于 2026-09-13 16:06 生成，Android arm64 Debug/Release APK 分别于 16:08/16:10 生成（0.6.0+9）。Windows 包内 AOT/原生 DLL 与最新构建一致；Android 分发 APK 与 Gradle 输出哈希一致，版本、arm64 ELF 和 Release 签名校验通过，两端 SHA256SUMS.txt 已更新。Android Release 沿用现有 Android Debug 签名。
+
+## 23. 2026-09-13 统一下拉菜单
+
+- 新增共享 AppMenuButton / AppDropdownField / AppMenuItem，覆盖主页保存时长、录音模式、录音列表排序/分组/录音操作、播放速度、语言、麦克风设备、采样率、锁屏触发条件，以及任务输出格式/MP3 码率。
+- 弹层改为白色圆角面板、浅绿选中项、右侧对勾和细滚动条；字段菜单跟随控件宽度并设置合理上限，长列表最高 360 逻辑像素。按实际内容尺寸和可用空间在控件上方或下方展开，避免菜单占满屏幕。
+- 使用 200ms 淡入/轻微缩放和 140ms 退出动画，选择框箭头随开合旋转。遵循减少动态效果设置；保留鼠标/触控、方向键/回车、Esc/返回关闭、点击外部关闭以及焦点恢复。重新打开时滚动到当前选项。
+- 长设备名称在菜单中完整换行，关闭的选择框保持紧凑；沿用现有中文/英文文案，并保留禁用状态、任务字段联动和原有业务回调。读屏可获取选中状态。
+- 新增 7 项菜单交互回归；完整 72 项 Flutter 测试通过，静态分析无问题。旧页面测试修正了缺失视口尺寸和未把大字体传入弹层的测试宿主，任务测试等待页面初始自动聚焦完成再滚动。
+- 实际字体预览为 apps/echoclip/build/qa/menus-*.png，覆盖中英文桌面、手机和 2 倍字体。此轮只修改 Flutter 界面，未修改原生录音/保存接口；尚未进行真机安装验证。
+- 本轮安装包已完成：Windows 安装器/便携 ZIP 于 2026-09-13 22:16 生成；Android arm64 Debug/Release 于 2026-09-14 13:46/13:47 生成，版本均为 0.6.0+9。Windows ZIP 内 AOT/原生 DLL 与最新构建一致，Android APK 与 Gradle 输出哈希一致，版本、ABI/ELF 和 Release 签名验证通过。两端 SHA256SUMS.txt 与 Android 更新说明已更新。
+
+
+## 24. 2026-09-14 Android 正式签名配置
+
+- Release 改用 `android/key.properties` 中的本地密钥，取消 Debug 签名回退；Debug 不要求正式签名文件。配置示例见 `apps/echoclip/android/key.properties.example`，完整操作见 `docs/ANDROID_SIGNING.md`。
+- `validateReleaseSigningConfig` 检查四个必填字段与密钥文件，在 `preReleaseBuild` / `validateSigningRelease` 执行前运行。打包脚本在修改版本前拒绝缺失的配置文件，并在构建原生依赖前检查配置。
+- 已验证：离线 `:app:preDebugBuild` 成功；缺少配置的 `:app:preReleaseBuild` 按预期失败；打包脚本提前拒绝 Release 且 pubspec 哈希未变化；key.properties / JKS 的 Git 忽略规则有效。
+- 本轮没有生成、读取或索要用户私人密钥/密码，没有新建实际 key.properties。尚未进行真实正式密钥签名构建，现有 dist Android APK 仍是上一轮的 Debug 签名产物。正式发布前必须由用户填写配置并重新打包、核对证书指纹。
+
+## 25. 2026-09-15 长时间录音卡顿
+
+- 根据用户接近 9 小时缓存的 Windows 视频定位共享 Rust 核心：每个音频块在持有状态锁时遍历所有 PCM 文件查询大小，造成 UI 同步 FFI 查询阻塞、录音队列积压和音频块被拒绝。
+- 改为增量 PCM 大小统计，恢复时一次性按实际文件校准；无分片过期时清理直接返回。清理失败保留剩余清单供重试，修复队列入队计数竞态。Windows/Android 共用此修复，无界面或多语言文案变化。
+- 独立临时缓存基准保留真实分片数量和回调频率、缩放 PCM 为 100Hz：540 分片状态查询最长由 464.933ms 降至 0.008ms，1440 分片由 741.025ms 降至 0.012ms；修复后两组均 400 次提交、0 次队列拒绝。未宣称连续九/二十四小时真机录音通过。
+- 新增 5 项核心回归；原生 workspace 65 项与 Flutter 72 项测试通过，静态分析无问题。详情与复现命令见 `docs/LONG_RECORDING_PERFORMANCE.md`。
+- 版本更新为 0.6.1+10，便于与旧包区分。Android 正式签名配置仍缺失，本轮不绕过既有签名要求；仅构建 Android Debug 与 Windows 正式安装包。
+
+- 已完成 0.6.1+10 Windows 安装器/便携 ZIP（00:43）和 Android arm64 Debug APK（00:45）。包内原生库来源、版本与 APK v2 签名验证通过；Windows DLL 的 540/1440 分片续录各 400 块、0 拒绝。SHA256SUMS.txt 与中英文更新说明已生成。Android 正式 Release 因缺少签名配置未构建；没有把旧 Release 当作本轮产物。
+
+## 26. 2026-09-15 配置 Android 正式签名
+
+- 用户明确要求配置签名并打包正式 APK。检查项目 Android 目录与用户 `.android-signing` 目录，未发现已有正式密钥或实际 `key.properties`，随后创建长期使用的 RSA 3072 位 JKS（别名 echoclip）。没有替换既有密钥。
+- 密钥、随机密码恢复配置和公共证书保存在仓库外 `%USERPROFILE%/.android-signing/`；为私密目录及项目 `android/key.properties` 设置当前用户/SYSTEM 专属 ACL。密码通过子进程临时环境传给 keytool，未写入命令参数、聊天或构建日志。签名配置已确认被 Git 忽略且未跟踪。
+- 公共证书 SHA-256：`d5c63e64a36ea2566ebbf3988da943c4e0aa3d21359904fc1f198cce60280c3b`，有效至 2054-01-31。以后所有正式更新沿用此密钥；备份整个私密目录，禁止公开 JKS 或包含密码的 properties 文件。
+- 继续沿用已有 Release 签名校验和 arm64 打包流程；本轮无需修改 Gradle 签名逻辑。
+
+- 正式 APK 于 2026-09-15 00:54 完成：`dist/android/0.6.1/EchoClip-0.6.1+10-arm64-v8a-release.apk`（11,500,044 字节），SHA-256 `5b794232a78a225085eccbdf6e46044bb9d6a02afaef88d1afaa1da69dcf4337`。v2 签名与上述正式证书匹配、不同于 Debug；版本 0.6.1+10、arm64-only、非调试属性均确认。包体与 Gradle 输出一致，原生 `.text` / `.rodata` 与已测试核心一致，未打入密钥或密码。校验和、公开证书指纹和中英文更新说明已更新。用户尚未在真机安装本次正式签名版本。
+
+
+## 27. 2026-09-15：开机自启、固定缓存区间、录制音量（0.7.0+11）
+
+- 最新请求已实现：设置页直接开机自启开关 + 独立启动任务页；复用定时任务编辑器，支持 0 秒延迟，配置与实际执行分离。Windows 当前用户登录启动，单实例保护；Android 开机通知 + 前台激活，遵守麦克风前台服务限制。
+- 自定义保存改为双端区间条 + 起始/结束秒数。0 秒以打开选择器时缓存最早位置为基准，固定到绝对样本及持久时间线 ID。缓存失效返回本地化错误；继续录音不平移已选片段。
+- 麦克风、系统声音分别有 0%–300% 持久化增益，默认 100%。Windows 原生混音中独立加权；Android 在 PCM 入缓存前处理；输出限幅，无需重启录音。
+- 中文、英文新增文案已生成；功能说明及验证边界见 `docs/STARTUP_RANGE_VOLUME.md`。
+- 验证：Rust 72、Flutter 78、Android JVM 18 项通过，Flutter analyze 通过；Windows 打包 DLL 实际导出 [2000,9000) 共 7000 个样本逐个一致。未在物理设备上执行真实重启或麦克风端到端测试。
+- 最终包：
+  - Windows 安装包 `dist/windows/0.7.0/EchoClip-0.7.0-x64-Setup.exe`，13,442,705 字节；SHA256 `67b53aeecf26bd4167887e632abe5e56fbcb67ba84ad0433caa4c01f466b70aa`。
+  - Windows 便携包 `dist/windows/0.7.0/EchoClip-0.7.0-windows-x64-portable.zip`，16,000,650 字节；SHA256 `9c14c25d6ae2d0e5a47e230beb33793ee975ceee3081de2df2ffb4f9a002be96`。
+  - Android 正式包 `dist/android/0.7.0/EchoClip-0.7.0+11-arm64-v8a-release.apk`，11,569,292 字节；SHA256 `e19b5478647fe3f38f83d4dacee8534d17ec9b8df7d207dadeca8ba56df733e9`。
+- Android 包版本 code 11/name 0.7.0，只有 arm64-v8a，非 debuggable，APK v2 签名验证通过。沿用第 26 节已保存的正式密钥，证书 SHA256 `d5c63e64a36ea2566ebbf3988da943c4e0aa3d21359904fc1f198cce60280c3b`，未创建或替换密钥。
+- 两个平台目录均有 `SHA256SUMS.txt` 和中英文 `CHANGELOG.md`。启动注册只在用户开关时执行；开发验证未替用户开启系统自启。此次未提交或推送新改动。
+
+
+## 28. 2026-09-15：整秒区间、音量交互、简化启动设置、版本显示（0.7.1+12）
+
+- 缓存选区最小单位改为 1 秒，HH:MM:SS 显示；起止时间各提供时、分、秒三个输入框。区间条四舍五入到整秒，缓存不足整秒的尾部不纳入选区，分秒校验 0–59；极窄屏时间刻度错行避免溢出。
+- 音量滑条原本已经松手才同步，本轮移除离散档位吸附，并改为连续拖动、精确整数输入及同排范围标记。平台请求串行并合并待提交值，提交期间不禁用滑条；拖动过程无音量写入。
+- 二级启动页只保留录音操作、实时上传开关，自动保存；普通定时任务编辑器不变。核心保存 startupActions，迁移旧启动模板的最终录音/上传状态，取消旧启动待执行项，普通定时任务和历史保留。新设置保存不执行，下一次启动立即应用，启动事件去重保留。
+- 设置页底部通过独立 app_info MethodChannel 读取 Android BuildConfig / Windows Flutter 构建常量，显示实际版本和构建号，无新增插件。
+- 完成 80 项 Flutter、74 项 Rust、18 项 Android JVM 回归，静态分析无问题；400/1100 像素界面已渲染检查，320 像素跨小时刻度溢出已修复。最终 Windows DLL 也实测设置持久化且未生成待执行任务。
+- Android 正式 APK v2 签名通过，沿用原证书，版本 0.7.1+12，arm64-only，无 debuggable 属性；未读取或修改密钥。未进行物理设备重启/持续录音复测。未替用户启用 OS 自启，也未提交/推送本轮改动。
+- 发布说明及 SHA256SUMS.txt 位于对应产物目录：
+  - dist/windows/0.7.1/EchoClip-0.7.1-x64-Setup.exe; 13454749 bytes; SHA256 7f89f87858bf705b09ccc29347fca6f6aa312db3d1e9462699cb5284bedb804a
+  - dist/windows/0.7.1/EchoClip-0.7.1-windows-x64-portable.zip; 16032914 bytes; SHA256 ce398958699b4759a7a7387071462920de050e0d23f6be0afc384aed616b2259
+  - dist/android/0.7.1/EchoClip-0.7.1+12-arm64-v8a-release.apk; 11585236 bytes; SHA256 80a67b51eb9ece778d174caa13662035c7b57a968199f1d2d64fcb2d8c3c9e18
+
+
+## 29. 2026-09-16：桌面内容上移和全高分隔线（0.7.2+13）
+
+- 用户要求桌面红框内容上移、左侧分隔线向上延伸。已将 EchoClip AppBar 从外层 Scaffold 移入左侧导航列，保持 56 逻辑像素品牌区和原菜单位置；右侧页面解除顶栏占位，整体上移 56 逻辑像素。
+- 分隔线添加 navigation.divider 标识并贯通 SafeArea 全高。四个页面共用布局；手机及宽屏移动端仍无品牌顶栏，行为不变。
+- Flutter analyze 通过，13 项桌面导航、窗口约束和中英文页面布局测试通过；实际渲染图为 apps/echoclip/build/ui-preview/072-desktop-home.png。临时预览脚本已移除。
+- 本轮只构建 Windows 0.7.2+13；Android 当前正式包仍是 0.7.1+12，本次没有改动移动端布局或录音逻辑。
+
+- Windows artifacts verified; portable executable matches the release build:
+  - dist\windows\0.7.2\EchoClip-0.7.2-windows-x64-portable.zip; 16033023 bytes; SHA256 98379d745f7b08204100dfae7b9b398ce98c68f74bd86001be76c09a6689a6ef
+  - dist\windows\0.7.2\EchoClip-0.7.2-x64-Setup.exe; 13452507 bytes; SHA256 4267fbb26d49572b71e63fdae177ad6e52c361afc67a703997750107a1e7caf0
+
+
+## 30. 2026-09-16：缓存按整片淘汰、5 分钟下限和 44.1 kHz（0.7.3+14）
+
+- 标准一分钟分片在缓存达到上限时即整体过期，包含恰好达到边界的时刻。以 30 分钟为例，达到上限时回落至 29:00，再录 42 秒后为 29:42，暂停和缓存恢复不会把过期片段重新计入。
+- 总缓存显示直接读取核心的 PCM 样本统计，移除界面自行增加并卡住上限的逻辑；本次录音秒表仍平滑更新。导出选区、同步读取和时长统计共用保留边界。
+- 保持导出锁定文件保护、删除失败重试和内存统计。修正锁定旧文件前后出现缺口时把已删除片段计入时长的问题；边界通过分片元数据二分查询，不重新引入每个回调扫描磁盘的问题。
+- 设置下限在输入框、Windows 配置和 Android 配置中统一改为 5 分钟，最大 1440 分钟，旧的不足 5 分钟配置按新下限读取。新增 44100 Hz 白名单与 44.1 kHz 显示；中英文生成文案同步。
+- 验证：83 项 Flutter、78 项 Rust、18 项 Android JVM，共 179 项测试通过；Flutter analyze 和 git diff --check 通过。新增测试覆盖边界、暂停/恢复、旧超限缓存、导出内容、回调尺寸变化、界面查询延迟及配置选项。
+- Windows 实际包内 DLL 实测：1799000 ms → 1740000 ms → 1782000 ms；销毁并恢复后仍为 1782000 ms，导出 PCM 完全一致；44.1 kHz WAV 头和 44100 个样本核对通过。便携包 EXE / DLL / AOT 与 Release 构建一致，实际 EXE 版本 0.7.3+14。
+- Android 正式 APK 版本 0.7.3 / code 14，arm64-only，非 debuggable，v2 签名验证通过，证书沿用 d5c63e64a36ea2566ebbf3988da943c4e0aa3d21359904fc1f198cce60280c3b。APK 内 JNI 的 .text / .rodata 与本次 Rust 构建完全一致，未变更签名密钥。
+- 说明：docs/CACHE_RETENTION.md；产物校验记录：apps/echoclip/build/qa/cache-073/package-verification.json 与 android-verification.json。测试使用合成 PCM / 模拟界面后端，未进行物理设备长录复测。未提交或推送本轮改动。
+- 两端产物目录均包含中英文 CHANGELOG.md 和 SHA256SUMS.txt：
+  - dist/windows/0.7.3/EchoClip-0.7.3-x64-Setup.exe; 13457164 bytes; SHA256 1ce530dcea0ca48924805b56c91f54760c6648ec252e102a6d91c5e0befc923b
+  - dist/windows/0.7.3/EchoClip-0.7.3-windows-x64-portable.zip; 16033370 bytes; SHA256 50e8d6aa3100d03374a6ee81a313e945460d7b6621e5556f1f7ff269d93169f4
+  - dist/android/0.7.3/EchoClip-0.7.3+14-arm64-v8a-release.apk; 11586252 bytes; SHA256 cfe9c5d9dc701e535b646d6b34af4d0dc563a47bc30ebf6c371d5f926eea7c43
+
+
+## 31. 2026-09-17：目录选择时机、平台启动设置与六种保存格式（0.8.0+15）
+
+- 应用初始化只读取录音目录，不再弹出目录选择器。未配置目录时点击录音按钮，先提示选择；取消不启动录音，成功选择后继续。设置页仍可修改目录。
+- Android 取消开机自启，设置显示平台不支持并禁用入口；清除旧启动开关和通知，不再申请启动相关权限。保留普通定时任务的开机闹钟恢复。
+- Windows 新增静默启动，依赖开机自启；关闭自启同步清除静默选项。注册命令增加 --silent，原生首帧与 Flutter 都避免显示窗口；手动启动正常显示，重复静默启动不唤醒窗口，托盘初始化失败则显示窗口。测试未修改用户自启注册表。
+- 新增保存格式设置，支持 MP3（默认）、FLAC、OGG/Vorbis、WAV、M4A/AAC 和 AAC/ADTS。主页、快捷键及通知保存读取当前设置；定时任务保留各自格式并支持新增选项。文件扩展名、MIME、录音列表识别同步，最终复核补齐 Android OGG 列表及重命名识别。
+- 两端 FFmpeg 补入内建 Vorbis 与 OGG 封装/解封装，应用保存使用 FFmpeg；OGG 编码器要求双声道，由重采样器转换。WAV 输出 PCM16，提示单文件 4 GB、每次最多 4 小时；预设、自定义范围、定时任务和原生核心共同限制时长，核心另校验 RIFF 容量。中文、英文同步。
+- 验证：88 项 Flutter、82 项 Rust、18 项 Android JVM，共 188 项自动化测试通过；Flutter analyze 和 git diff --check 通过。Android OGG 识别常量补丁之后重新编译 Release 并通过发布 lint。尚未执行物理设备重启或 Android 真机端到端格式导出。
+- 实际 Windows 发布 DLL + FFmpeg 在 16 kHz、44.1 kHz 分别导出全部六种格式，共 12 个文件解码成功；WAV/FLAC 逐样本一致。便携 ZIP 的 EXE、DLL、FFmpeg、AOT 与 Release 完全一致；DLL 对照 CMake rust-target 目录（不是单独 cargo 的 target/release 目录），EXE 版本 0.8.0+15。
+- Android 正式包版本 0.8.0 / code 15，arm64-only，非 debuggable，v2 签名通过；沿用现有正式证书，未修改密钥。APK 与 Gradle 输出一致，JNI 与 FFmpeg 的 .text / .rodata 和本次构建一致。
+- 功能说明：docs/STARTUP_EXPORT_FORMATS.md。包内核心验证记录：apps/echoclip/build/qa/formats-080/packaged-native-export-verification.json、windows-package-verification.json、android-package-verification.json。
+- 两端产物目录含中英文 CHANGELOG.md 与 SHA256SUMS.txt，Android 另附公开证书指纹。此次未提交或推送源码。
+  - dist/windows/0.8.0/EchoClip-0.8.0-x64-Setup.exe; 13514342 bytes; SHA256 7c89906762e391d54c491a4fa179a307390fec5ec7561cb4e37a55542b3781ef。
+  - dist/windows/0.8.0/EchoClip-0.8.0-windows-x64-portable.zip; 16111710 bytes; SHA256 12e3c8927e50af9d0a53b4c7fa9e3ceafe911f6a31ed40dfedfd644db54ead50。
+  - dist/android/0.8.0/EchoClip-0.8.0+15-arm64-v8a-release.apk; 11647420 bytes; SHA256 5c59af6c6ff6543516054eb2b40e456350efb27183e41accf68ceece40b1a695。

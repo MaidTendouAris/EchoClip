@@ -305,7 +305,7 @@ abstract class AppLocalizations {
   /// No description provided for @customSaveDuration.
   ///
   /// In en, this message translates to:
-  /// **'Custom'**
+  /// **'Buffer range'**
   String get customSaveDuration;
 
   /// No description provided for @customSaveSeconds.
@@ -1145,7 +1145,7 @@ abstract class AppLocalizations {
   /// No description provided for @bufferDurationHelper.
   ///
   /// In en, this message translates to:
-  /// **'1 to 1440 minutes'**
+  /// **'5 to 1440 minutes'**
   String get bufferDurationHelper;
 
   /// No description provided for @minutesUnit.
@@ -1855,6 +1855,234 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Writing audio'**
   String get saveWritingStatus;
+
+  /// No description provided for @bufferRange.
+  ///
+  /// In en, this message translates to:
+  /// **'Buffer range'**
+  String get bufferRange;
+
+  /// No description provided for @bufferRangeHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a range in whole seconds. 00:00:00 is the oldest buffered audio when this window opens. Your selection stays fixed as recording continues.'**
+  String get bufferRangeHelp;
+
+  /// No description provided for @bufferRangeStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Start time'**
+  String get bufferRangeStart;
+
+  /// No description provided for @bufferRangeEnd.
+  ///
+  /// In en, this message translates to:
+  /// **'End time'**
+  String get bufferRangeEnd;
+
+  /// No description provided for @bufferRangeInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a range of at least 1 second within the buffer. Minutes and seconds must be 0–59.'**
+  String get bufferRangeInvalid;
+
+  /// No description provided for @bufferRangeEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'At least 1 second of buffered audio is needed.'**
+  String get bufferRangeEmpty;
+
+  /// No description provided for @bufferRangeUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to read the buffer. Please try again.'**
+  String get bufferRangeUnavailable;
+
+  /// No description provided for @bufferRangeExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'The selected audio has changed or expired. Please select a new range.'**
+  String get bufferRangeExpired;
+
+  /// No description provided for @saveSelectedRange.
+  ///
+  /// In en, this message translates to:
+  /// **'Save selection'**
+  String get saveSelectedRange;
+
+  /// No description provided for @startupTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Launch at startup'**
+  String get startupTitle;
+
+  /// No description provided for @startupTasks.
+  ///
+  /// In en, this message translates to:
+  /// **'Startup actions'**
+  String get startupTasks;
+
+  /// No description provided for @startupWindowsHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Open EchoClip after signing in to Windows and run enabled startup tasks.'**
+  String get startupWindowsHelp;
+
+  /// No description provided for @startupAndroidHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Launch at startup is not supported on this platform yet.'**
+  String get startupAndroidHelp;
+
+  /// No description provided for @startupTasksHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply these recording and upload settings immediately after startup. Changes are saved automatically for the next startup.'**
+  String get startupTasksHelp;
+
+  /// No description provided for @startupDelay.
+  ///
+  /// In en, this message translates to:
+  /// **'Delay after startup'**
+  String get startupDelay;
+
+  /// No description provided for @startupDelayHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Set to 0 seconds to run immediately after startup.'**
+  String get startupDelayHelp;
+
+  /// No description provided for @startupEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No startup tasks'**
+  String get startupEmpty;
+
+  /// No description provided for @startupPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow notifications to show the startup shortcut after boot.'**
+  String get startupPermission;
+
+  /// No description provided for @startupFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save startup settings. Please try again.'**
+  String get startupFailed;
+
+  /// No description provided for @recordingVolume.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording volume'**
+  String get recordingVolume;
+
+  /// No description provided for @volumeSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save volume. Please try again.'**
+  String get volumeSaveFailed;
+
+  /// No description provided for @timeHoursShort.
+  ///
+  /// In en, this message translates to:
+  /// **'h'**
+  String get timeHoursShort;
+
+  /// No description provided for @timeMinutesShort.
+  ///
+  /// In en, this message translates to:
+  /// **'min'**
+  String get timeMinutesShort;
+
+  /// No description provided for @timeSecondsShort.
+  ///
+  /// In en, this message translates to:
+  /// **'s'**
+  String get timeSecondsShort;
+
+  /// No description provided for @volumeInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a whole number from 0 to 300.'**
+  String get volumeInvalid;
+
+  /// No description provided for @startupRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording'**
+  String get startupRecording;
+
+  /// No description provided for @startupRecordingHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Start recording after startup when enabled; otherwise keep recording stopped.'**
+  String get startupRecordingHelp;
+
+  /// No description provided for @startupUpload.
+  ///
+  /// In en, this message translates to:
+  /// **'Live upload'**
+  String get startupUpload;
+
+  /// No description provided for @startupUploadHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable live upload after startup. Uses your saved server settings.'**
+  String get startupUploadHelp;
+
+  /// No description provided for @softwareVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Version'**
+  String get softwareVersion;
+
+  /// No description provided for @chooseRecordingFolderFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a recording folder before starting. Saved recordings will be placed there.'**
+  String get chooseRecordingFolderFirst;
+
+  /// No description provided for @startupUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Launch at startup is not supported on this platform yet.'**
+  String get startupUnsupported;
+
+  /// No description provided for @startupSilent.
+  ///
+  /// In en, this message translates to:
+  /// **'Start silently'**
+  String get startupSilent;
+
+  /// No description provided for @startupSilentHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep the window hidden in the system tray when launched at startup. Requires launch at startup.'**
+  String get startupSilentHelp;
+
+  /// No description provided for @saveFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Save format'**
+  String get saveFormat;
+
+  /// No description provided for @saveFormatHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'MP3 is the default. Applies to manual saves; scheduled tasks use their own output format.'**
+  String get saveFormatHelp;
+
+  /// No description provided for @wavSaveLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'A WAV recording cannot exceed 4 GB. Each save is limited to 4 hours.'**
+  String get wavSaveLimit;
+
+  /// No description provided for @exportSettingsFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save the format setting. Please try again.'**
+  String get exportSettingsFailed;
 }
 
 class _AppLocalizationsDelegate

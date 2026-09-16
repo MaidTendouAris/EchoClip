@@ -17,7 +17,7 @@ class _BufferMinutesFieldState extends State<_BufferMinutesField> {
   late final TextEditingController _controller;
   late final FocusNode _focusNode;
 
-  int get _minutes => (widget.bufferSeconds / 60).round().clamp(1, 1440);
+  int get _minutes => (widget.bufferSeconds / 60).round().clamp(5, 1440);
 
   @override
   void initState() {
@@ -51,7 +51,7 @@ class _BufferMinutesFieldState extends State<_BufferMinutesField> {
 
   void _applyValue() {
     final parsed = int.tryParse(_controller.text.trim()) ?? _minutes;
-    final minutes = parsed.clamp(1, 1440).toInt();
+    final minutes = parsed.clamp(5, 1440).toInt();
     _controller.text = minutes.toString();
     if (minutes != _minutes) {
       widget.onChanged(minutes);
@@ -106,9 +106,18 @@ class SettingsPage extends StatelessWidget {
     required this.onClearCache,
     required this.onLanguageModeChanged,
     required this.onOpenUrl,
+    this.onOpenStartupTasks,
+    this.exportFormat = "mp3",
+    this.onExportFormatChanged,
   });
 
-  static const List<int> _sampleRateOptions = [8000, 16000, 24000, 48000];
+  static const List<int> _sampleRateOptions = [
+    8000,
+    16000,
+    24000,
+    44100,
+    48000,
+  ];
   static const String _systemDefaultDeviceValue =
       '__echoclip_system_default_input__';
   static const String _repositoryUrl =
@@ -116,7 +125,10 @@ class SettingsPage extends StatelessWidget {
   static const String _issuesUrl =
       'https://github.com/MaidTendouAris/EchoClip/issues';
 
+  final Future<void> Function()? onOpenStartupTasks;
   final String? folderUri;
+  final String exportFormat;
+  final Future<void> Function(String)? onExportFormatChanged;
   final int sampleRate;
   final int bufferSeconds;
   final List<AudioInputDevice> audioInputDevices;
@@ -175,11 +187,12 @@ class SettingsPage extends StatelessWidget {
         ),
       ),
     );
+    final startup = _StartupSettingsCard(onOpenTasks: onOpenStartupTasks);
     final language = _SettingsSection(
       title: l10n.languageSettings,
       icon: Icons.language,
       children: [
-        DropdownButtonFormField<UiLanguageMode>(
+        AppDropdownField<UiLanguageMode>(
           isExpanded: true,
           key: ValueKey(languageMode),
           initialValue: languageMode,
@@ -244,6 +257,7 @@ class SettingsPage extends StatelessWidget {
                   );
                 },
         ),
+        _SourceVolumeControl(source: 'microphone', enabled: microphoneEnabled),
         CheckboxListTile(
           key: const ValueKey('settings.systemAudio'),
           contentPadding: EdgeInsets.zero,
@@ -272,13 +286,17 @@ class SettingsPage extends StatelessWidget {
                   );
                 },
         ),
+        _SourceVolumeControl(
+          source: 'system',
+          enabled: systemAudioSupported && systemAudioEnabled,
+        ),
         const SizedBox(height: 8),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
               key: const ValueKey('settings.inputDevice'),
-              child: DropdownButtonFormField<String>(
+              child: AppDropdownField<String>(
                 key: ValueKey((
                   selectedDeviceValue,
                   Object.hashAll(knownDeviceIds),
@@ -364,7 +382,7 @@ class SettingsPage extends StatelessWidget {
       title: l10n.recordingSettings,
       icon: Icons.tune,
       children: [
-        DropdownButtonFormField<int>(
+        AppDropdownField<int>(
           isExpanded: true,
           initialValue: sampleRate,
           decoration: InputDecoration(
@@ -401,11 +419,41 @@ class SettingsPage extends StatelessWidget {
         ),
       ],
     );
+    final export = _SettingsSection(
+      title: l10n.saveFormat,
+      icon: Icons.audio_file_outlined,
+      children: [
+        AppDropdownField<String>(
+          key: const ValueKey('settings.exportFormat'),
+          initialValue: exportFormat,
+          isExpanded: true,
+          decoration: InputDecoration(
+            labelText: l10n.outputFormat,
+            prefixIcon: const Icon(Icons.save_alt),
+            border: const OutlineInputBorder(),
+          ),
+          items: [
+            for (final format in recordingExportFormats)
+              DropdownMenuItem(
+                value: format,
+                child: Text(format.toUpperCase()),
+              ),
+          ],
+          onChanged: onExportFormatChanged == null
+              ? null
+              : (value) {
+                  if (value != null) onExportFormatChanged!(value);
+                },
+        ),
+        const SizedBox(height: 12),
+        Text(exportFormat == 'wav' ? l10n.wavSaveLimit : l10n.saveFormatHelp),
+      ],
+    );
     final lock = _SettingsSection(
       title: l10n.lockRecordingSettings,
       icon: Icons.screen_lock_portrait,
       children: [
-        DropdownButtonFormField<LockRecordingTrigger>(
+        AppDropdownField<LockRecordingTrigger>(
           isExpanded: true,
           initialValue: lockRecordingTrigger,
           decoration: InputDecoration(
@@ -563,19 +611,33 @@ class SettingsPage extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
-                          child: stack([folder, sources, quality, lock]),
+                          child: stack([
+                            folder,
+                            sources,
+                            quality,
+                            export,
+                            lock,
+                          ]),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
-                          child: stack([language, server, cache, about]),
+                          child: stack([
+                            language,
+                            startup,
+                            server,
+                            cache,
+                            about,
+                          ]),
                         ),
                       ],
                     )
                   : stack([
                       folder,
                       language,
+                      startup,
                       sources,
                       quality,
+                      export,
                       lock,
                       server,
                       cache,
@@ -583,6 +645,7 @@ class SettingsPage extends StatelessWidget {
                     ]);
             },
           ),
+          const _AppVersionFooter(),
         ],
       ),
     );
@@ -739,5 +802,393 @@ class _SettingsRow extends StatelessWidget {
         );
       },
     ),
+  );
+}
+
+class _SourceVolumeControl extends StatefulWidget {
+  const _SourceVolumeControl({required this.source, required this.enabled});
+  final String source;
+  final bool enabled;
+  @override
+  State<_SourceVolumeControl> createState() => _SourceVolumeControlState();
+}
+
+class _SourceVolumeControlState extends State<_SourceVolumeControl> {
+  final _client = const ReplayServiceClient();
+  final _controller = TextEditingController(text: '100');
+  final _focus = FocusNode();
+  double _value = 100;
+  int _saved = 100;
+  int? _pending;
+  bool _sending = false;
+  bool _loaded = false;
+  bool _dragging = false;
+  bool _invalid = false;
+  int _revision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocusChanged);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocusChanged);
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (!_focus.hasFocus && !_dragging) {
+      _commitText();
+    }
+  }
+
+  Future<void> _load() async {
+    try {
+      final values = await _client.getAudioGains();
+      if (mounted) {
+        setState(() {
+          _saved = (values[widget.source] as num? ?? 100).round().clamp(0, 300);
+          _value = _saved.toDouble();
+          _controller.text = '$_saved';
+          _loaded = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loaded = true);
+      }
+    }
+  }
+
+  void _commitText() {
+    if (!_loaded || !widget.enabled) {
+      return;
+    }
+    final parsed = int.tryParse(_controller.text.trim());
+    if (parsed == null || parsed < 0 || parsed > 300) {
+      setState(() => _invalid = true);
+      return;
+    }
+    setState(() {
+      _invalid = false;
+      _value = parsed.toDouble();
+    });
+    _commit(_value);
+  }
+
+  // Keep pointer updates local. Serialize released values and coalesce newer
+  // edits without blocking the next drag on a platform/storage acknowledgement.
+  void _commit(double value) {
+    final target = value.round();
+    _controller.text = '$target';
+    if (!_sending && target == _saved) {
+      return;
+    }
+    _revision++;
+    _pending = target;
+    if (!_sending) {
+      unawaited(_drain());
+    }
+  }
+
+  Future<void> _drain() async {
+    _sending = true;
+    while (_pending != null) {
+      final target = _pending!;
+      final revision = _revision;
+      _pending = null;
+      try {
+        final result = await _client.setAudioGain(widget.source, target);
+        if (result['ok'] != true) {
+          throw StateError('gain_failed');
+        }
+        _saved = target;
+      } catch (_) {
+        if (mounted && revision == _revision && !_dragging) {
+          setState(() {
+            _value = _saved.toDouble();
+            _controller.text = '$_saved';
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(context.l10n.volumeSaveFailed)),
+          );
+        }
+      }
+    }
+    _sending = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.enabled && _loaded;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F7F5),
+        border: Border.all(color: const Color(0xFFE1E8E4)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  context.l10n.recordingVolume,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 96,
+                child: TextField(
+                  key: ValueKey('settings.${widget.source}VolumeInput'),
+                  enabled: enabled,
+                  controller: _controller,
+                  focusNode: _focus,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  textInputAction: TextInputAction.done,
+                  textAlign: TextAlign.end,
+                  onSubmitted: (_) => _commitText(),
+                  onChanged: (_) {
+                    _revision++;
+                  },
+                  decoration: InputDecoration(
+                    suffixText: '%',
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text('0%', style: TextStyle(fontSize: 12)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(trackHeight: 4),
+                  child: Slider(
+                    key: ValueKey('settings.${widget.source}Volume'),
+                    min: 0,
+                    max: 300,
+                    value: _value,
+                    semanticFormatterCallback: (value) => '${value.round()}%',
+                    onChangeStart: enabled
+                        ? (_) {
+                            _dragging = true;
+                            _revision++;
+                            _focus.unfocus();
+                          }
+                        : null,
+                    onChanged: enabled
+                        ? (value) => setState(() {
+                            _value = value;
+                            _invalid = false;
+                            _controller.text = '${value.round()}';
+                          })
+                        : null,
+                    onChangeEnd: enabled
+                        ? (value) {
+                            _dragging = false;
+                            _commit(value);
+                          }
+                        : null,
+                  ),
+                ),
+              ),
+              const Text('300%', style: TextStyle(fontSize: 12)),
+            ],
+          ),
+          if (_invalid)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                context.l10n.volumeInvalid,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StartupSettingsCard extends StatefulWidget {
+  const _StartupSettingsCard({required this.onOpenTasks});
+  final Future<void> Function()? onOpenTasks;
+  @override
+  State<_StartupSettingsCard> createState() => _StartupSettingsCardState();
+}
+
+class _StartupSettingsCardState extends State<_StartupSettingsCard> {
+  final _client = const ReplayServiceClient();
+  bool _enabled = false;
+  bool _supported = defaultTargetPlatform != TargetPlatform.android;
+  bool _silent = false;
+  bool _loaded = false;
+  bool _busy = false;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final value = await _client.getStartupSettings();
+      if (mounted) {
+        setState(() {
+          _supported =
+              value.startupSupported &&
+              defaultTargetPlatform != TargetPlatform.android;
+          _enabled = _supported && value.startupEnabled;
+          _silent = _enabled && value.startupSilent;
+          _loaded = value.ok;
+        });
+      }
+    } catch (_) {
+      /* The control stays unavailable until the platform is ready. */
+    }
+  }
+
+  Future<void> _setEnabled(bool enabled) async {
+    setState(() => _busy = true);
+    try {
+      final result = await _client.setStartupEnabled(enabled);
+      if (!mounted) return;
+      if (result.ok) {
+        setState(() {
+          _enabled = result.startupEnabled;
+          _silent = _enabled && result.startupSilent;
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.error?.contains('notification_permission') == true
+                  ? context.l10n.startupPermission
+                  : context.l10n.startupFailed,
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(context.l10n.startupFailed)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _setSilent(bool silent) async {
+    setState(() => _busy = true);
+    try {
+      final result = await _client.setStartupSilent(silent);
+      if (!result.ok) throw StateError(result.error ?? 'startup_failed');
+      if (mounted) setState(() => _silent = result.startupSilent);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(context.l10n.startupFailed)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _Panel(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SwitchListTile(
+          key: const ValueKey('settings.startupEnabled'),
+          contentPadding: EdgeInsets.zero,
+          secondary: const Icon(Icons.power_settings_new),
+          title: Text(context.l10n.startupTitle),
+          value: _enabled,
+          subtitle: Text(
+            _supported
+                ? context.l10n.startupWindowsHelp
+                : context.l10n.startupUnsupported,
+          ),
+          onChanged: _supported && _loaded && !_busy ? _setEnabled : null,
+        ),
+        if (_supported) ...[
+          SwitchListTile(
+            key: const ValueKey('settings.startupSilent'),
+            contentPadding: EdgeInsets.zero,
+            secondary: const Icon(Icons.visibility_off_outlined),
+            title: Text(context.l10n.startupSilent),
+            subtitle: Text(context.l10n.startupSilentHelp),
+            value: _enabled && _silent,
+            onChanged: _enabled && _loaded && !_busy ? _setSilent : null,
+          ),
+          const Divider(height: 20),
+          ListTile(
+            key: const ValueKey('settings.startup'),
+            contentPadding: EdgeInsets.zero,
+            title: Text(context.l10n.startupTasks),
+            subtitle: Text(context.l10n.startupTasksHelp),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: widget.onOpenTasks == null
+                ? null
+                : () async {
+                    await widget.onOpenTasks!();
+                    if (mounted) await _load();
+                  },
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+class _AppVersionFooter extends StatefulWidget {
+  const _AppVersionFooter();
+  @override
+  State<_AppVersionFooter> createState() => _AppVersionFooterState();
+}
+
+class _AppVersionFooterState extends State<_AppVersionFooter> {
+  late final Future<Map<dynamic, dynamic>> _version =
+      const ReplayServiceClient().getAppVersion();
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Map<dynamic, dynamic>>(
+    future: _version,
+    builder: (context, snapshot) {
+      final version = snapshot.data?['version'];
+      final build = snapshot.data?['buildNumber'];
+      return Padding(
+        key: const ValueKey('settings.version'),
+        padding: const EdgeInsets.fromLTRB(12, 16, 12, 28),
+        child: Text(
+          '${context.l10n.softwareVersion} · ${version == null ? '—' : 'EchoClip $version${build == null ? '' : ' ($build)'}'}',
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: const Color(0xFF6A7D73)),
+        ),
+      );
+    },
   );
 }

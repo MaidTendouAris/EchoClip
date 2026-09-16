@@ -474,6 +474,12 @@ $androidDir = Join-Path $appDir "android"
 $pubspecPath = Join-Path $appDir "pubspec.yaml"
 $localPropertiesPath = Join-Path $androidDir "local.properties"
 
+# Release uses only the owner's private key. Fail before touching versions or
+# building native dependencies if the local signing configuration is absent.
+if ($BuildMode -ne "debug" -and -not (Test-Path -LiteralPath (Join-Path $androidDir "key.properties") -PathType Leaf)) {
+    throw "正式签名尚未配置：请将 apps/echoclip/android/key.properties.example 复制为 key.properties，并填写你的密钥信息。详见 docs/ANDROID_SIGNING.md。只构建调试包可使用 -BuildMode debug。"
+}
+
 if (-not $OutputRoot) {
     $OutputRoot = Join-Path $repoRoot "dist\android"
 }
@@ -533,6 +539,15 @@ if (-not $SkipPubGet) {
         -FilePath (Join-Path $flutterSdk "bin\flutter.bat") `
         -Arguments @("pub", "get") `
         -WorkingDirectory $appDir
+}
+
+if ($BuildMode -ne "debug") {
+    Write-Step "检查本地正式签名配置"
+    Write-LocalProperties -Path $localPropertiesPath -Values $localProperties
+    Invoke-Checked `
+        -FilePath $gradleBat `
+        -Arguments @(":app:validateReleaseSigningConfig", "-Ptarget-platform=$androidTargetPlatform") `
+        -WorkingDirectory $androidDir
 }
 
 if (-not $SkipRustBuild) {

@@ -72,3 +72,14 @@ Name: "{autodesktop}\EchoClip"; Filename: "{app}\echoclip.exe"; WorkingDir: "{ap
 
 [Run]
 Filename: "{app}\echoclip.exe"; Description: "{cm:LaunchProgram,EchoClip}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  StartupCommand: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+    if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'EchoClip', StartupCommand) then
+      if CompareText(StartupCommand, '"' + ExpandConstant('{app}\echoclip.exe') + '" --autostart') = 0 then
+        RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'EchoClip');
+end;

@@ -228,7 +228,13 @@ class ScheduleBootReceiver : BroadcastReceiver() {
         if (intent?.action == Intent.ACTION_BOOT_COMPLETED ||
             intent?.action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
         ) {
-            ScheduleCoordinator.reschedule(context.applicationContext)
+            val pending = goAsync()
+            Thread {
+                try {
+                    if (intent.action == Intent.ACTION_BOOT_COMPLETED) StartupCoordinator.onBoot(context.applicationContext)
+                    ScheduleCoordinator.reschedule(context.applicationContext)
+                } finally { pending.finish() }
+            }.start()
         }
     }
 }

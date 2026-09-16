@@ -1,11 +1,12 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
 
-FlutterWindow::FlutterWindow(const flutter::DartProject& project)
-    : project_(project) {}
+FlutterWindow::FlutterWindow(const flutter::DartProject& project, bool start_hidden)
+    : project_(project), start_hidden_(start_hidden) {}
 
 FlutterWindow::~FlutterWindow() {}
 
@@ -25,10 +26,25 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  app_info_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "com.echoclip/app_info",
+      &flutter::StandardMethodCodec::GetInstance());
+  app_info_channel_->SetMethodCallHandler([](const auto& call, auto result) {
+    if (call.method_name() != "getAppVersion") {
+      result->NotImplemented();
+      return;
+    }
+    std::string version = FLUTTER_VERSION;
+    version = version.substr(0, version.find('+'));
+    result->Success(flutter::EncodableValue(flutter::EncodableMap{
+        {flutter::EncodableValue("version"), flutter::EncodableValue(version)},
+        {flutter::EncodableValue("buildNumber"),
+         flutter::EncodableValue(std::to_string(FLUTTER_VERSION_BUILD))}}));
+  });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    if (!start_hidden_) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -40,6 +56,10 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (app_info_channel_) {
+    app_info_channel_->SetMethodCallHandler(nullptr);
+    app_info_channel_.reset();
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

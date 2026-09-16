@@ -45,7 +45,7 @@ void main() {
         );
         await _selectMode(tester, RecordingMode.standard);
         await tester.pump(const Duration(seconds: 1));
-        final menu = tester.widget<PopupMenuButton<RecordingMode>>(
+        final menu = tester.widget<AppMenuButton<RecordingMode>>(
           find.byKey(_modeKey),
         );
         expect(menu.initialValue, RecordingMode.standard);
@@ -84,7 +84,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<PopupMenuButton<RecordingMode>>(find.byKey(_modeKey))
+          .widget<AppMenuButton<RecordingMode>>(find.byKey(_modeKey))
           .initialValue,
       RecordingMode.standard,
     );
@@ -110,7 +110,7 @@ void main() {
       );
       expect(
         tester
-            .widget<PopupMenuButton<RecordingMode>>(find.byKey(_modeKey))
+            .widget<AppMenuButton<RecordingMode>>(find.byKey(_modeKey))
             .enabled,
         isFalse,
       );
@@ -124,6 +124,79 @@ void main() {
             .onPressed,
         isNotNull,
       );
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets('cache meter follows native eviction and stays stable on pause', (
+    tester,
+  ) async {
+    final backend = _MobileBackend()
+      ..running = true
+      ..availableMillis = 1799950;
+    await _mount(tester, backend, 'en');
+    int buffered() => tester
+        .widget<RecorderPage>(find.byType(RecorderPage))
+        .meterSnapshot
+        .value
+        .recordedMillis;
+    expect(buffered(), 1799950);
+
+    // A pending native poll must not fabricate extra cached audio.
+    backend.holdPolls = true;
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(buffered(), 1799950);
+    backend.availableMillis = 1740000;
+    backend.holdPolls = false;
+    for (final pending in backend.polls.values) {
+      pending.complete(backend.snapshot);
+    }
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(buffered(), 1740000);
+
+    backend.availableMillis = 1782000;
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    expect(buffered(), 1782000);
+    await tester.tap(find.byType(FloatingActionButton));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(backend.running, isFalse);
+    expect(buffered(), 1782000);
+    await tester.pumpWidget(const SizedBox.shrink());
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets(
+    'folder selection waits until recording and cancel never starts capture',
+    (tester) async {
+      final backend = _MobileBackend()..folderSelected = false;
+      await _mount(tester, backend, 'en');
+      expect(backend.folderRequests, 0);
+      expect(find.byType(AlertDialog), findsNothing);
+      await tester.tap(find.byType(FloatingActionButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.textContaining('Choose a recording folder before starting.'),
+        findsOneWidget,
+      );
+      expect(backend.starts, 0);
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(backend.folderRequests, 0);
+      expect(backend.starts, 0);
+      await tester.tap(find.byType(FloatingActionButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.widgetWithText(FilledButton, 'Choose folder'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(backend.folderRequests, 1);
+      expect(backend.starts, 1);
       await tester.pumpWidget(const SizedBox.shrink());
       debugDefaultTargetPlatformOverride = null;
     },
@@ -191,6 +264,9 @@ class _MobileBackend {
   String mode = 'standard';
   String evidence = 'off';
   bool running = false;
+  int availableMillis = 0;
+  bool folderSelected = true;
+  int folderRequests = 0;
   int starts = 0;
   int stops = 0;
   bool holdPolls = false;
@@ -206,12 +282,19 @@ class _MobileBackend {
     'serviceState': mode == 'standard'
         ? (running ? 'standard_recording' : 'standard_paused')
         : (evidence == 'armed' ? 'lockscreen_armed' : 'stopped'),
-    'availableMillis': 0,
+    'availableMillis': availableMillis,
   };
 
   Future<Object?> call(MethodCall call) async {
     switch (call.method) {
       case 'getRecordingFolder':
+        return {
+          'selected': folderSelected,
+          'uri': folderSelected ? 'content://test/recordings' : null,
+        };
+      case 'chooseRecordingFolder':
+        folderRequests++;
+        folderSelected = true;
         return {'selected': true, 'uri': 'content://test/recordings'};
       case 'listRecordings':
       case 'listGroups':

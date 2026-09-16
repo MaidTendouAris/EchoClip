@@ -1,0 +1,8 @@
+# Copy this file to key.properties (ignored by Git) and fill in your own values.
+# Use UTF-8 without BOM. Do not put quotes around values.
+# Use forward slashes in Windows paths. Relative paths are based on android/.
+# Replace YOUR_USER with your Windows account name, or use your actual key path.
+storeFile=C:/Users/YOUR_USER/.android-signing/echoclip-release.jks
+keyAlias=echoclip
+storePassword=
+keyPassword=

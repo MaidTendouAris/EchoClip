@@ -401,14 +401,14 @@ class _LibraryPageState extends State<LibraryPage> {
         ),
       ),
       const SizedBox(width: 8),
-      PopupMenuButton<_LibrarySort>(
+      AppMenuButton<_LibrarySort>(
         key: const ValueKey('library.sort'),
         tooltip: context.l10n.sortRecordings,
         onSelected: (value) => setState(() => _sort = value),
         icon: const Icon(Icons.sort, size: 22),
         itemBuilder: (_) => [
           for (final sort in _LibrarySort.values)
-            CheckedPopupMenuItem(
+            AppMenuItem(
               value: sort,
               checked: sort == _sort,
               child: Text(_sortLabel(context.l10n, sort)),
@@ -482,7 +482,7 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 
   Widget _groupMenu(BuildContext context, RecordingGroup group) =>
-      PopupMenuButton<String>(
+      AppMenuButton<String>(
         key: const ValueKey('library.groupActions'),
         tooltip: context.l10n.groupActions,
         icon: const Icon(Icons.more_horiz),
@@ -490,8 +490,8 @@ class _LibraryPageState extends State<LibraryPage> {
             ? _renameGroup(context, group)
             : _deleteGroup(context, group),
         itemBuilder: (_) => [
-          PopupMenuItem(value: 'rename', child: Text(context.l10n.renameGroup)),
-          PopupMenuItem(value: 'delete', child: Text(context.l10n.deleteGroup)),
+          AppMenuItem(value: 'rename', child: Text(context.l10n.renameGroup)),
+          AppMenuItem(value: 'delete', child: Text(context.l10n.deleteGroup)),
         ],
       );
 
@@ -734,7 +734,7 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 
   Widget _clipMenu(BuildContext context, ClipItem clip) =>
-      PopupMenuButton<String>(
+      AppMenuButton<String>(
         key: ValueKey('library.actions.${clip.uri ?? clip.name}'),
         tooltip: context.l10n.recordingActions,
         icon: const Icon(Icons.more_horiz, color: Color(0xFF7B8F83)),
@@ -759,24 +759,24 @@ class _LibraryPageState extends State<LibraryPage> {
         },
         itemBuilder: (_) => [
           if (widget.onShare != null && clip.uri != null)
-            PopupMenuItem(
+            AppMenuItem(
               value: 'share',
               child: Row(
                 children: [
                   const Icon(Icons.share_outlined, size: 20),
                   const SizedBox(width: 12),
-                  Text(context.l10n.shareRecording),
+                  Expanded(child: Text(context.l10n.shareRecording)),
                 ],
               ),
             ),
           if (clip.name.toLowerCase().endsWith('.wav'))
-            PopupMenuItem(
+            AppMenuItem(
               value: 'convert_mp3',
               child: Text(context.l10n.convertWavToMp3),
             ),
-          PopupMenuItem(value: 'rename', child: Text(context.l10n.rename)),
-          PopupMenuItem(value: 'move', child: Text(context.l10n.moveToGroup)),
-          PopupMenuItem(value: 'delete', child: Text(context.l10n.delete)),
+          AppMenuItem(value: 'rename', child: Text(context.l10n.rename)),
+          AppMenuItem(value: 'move', child: Text(context.l10n.moveToGroup)),
+          AppMenuItem(value: 'delete', child: Text(context.l10n.delete)),
         ],
       );
 
@@ -1212,26 +1212,38 @@ class _PlaybackControlsState extends State<_PlaybackControls> {
               ),
               Semantics(
                 label: context.l10n.playbackSpeed,
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<double>(
-                    value: _nearestSpeed(
-                      widget.playback.speed,
-                      widget.speedOptions,
-                    ),
-                    items: [
-                      for (final speed in widget.speedOptions)
-                        DropdownMenuItem(
-                          value: speed,
-                          child: Text(
-                            '${speed.toStringAsFixed(speed < 1 ? 2 : 1)}x',
-                          ),
+                child: AppMenuButton<double>(
+                  key: const ValueKey('library.speed'),
+                  tooltip: context.l10n.playbackSpeed,
+                  initialValue: _nearestSpeed(
+                    widget.playback.speed,
+                    widget.speedOptions,
+                  ),
+                  onSelected: widget.onSpeedChanged,
+                  itemBuilder: (_) => [
+                    for (final speed in widget.speedOptions)
+                      AppMenuItem(
+                        value: speed,
+                        child: Text(
+                          '${speed.toStringAsFixed(speed < 1 ? 2 : 1)}x',
                         ),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        widget.onSpeedChanged(value);
-                      }
-                    },
+                      ),
+                  ],
+                  childBuilder: (context, open) => Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${_nearestSpeed(widget.playback.speed, widget.speedOptions).toStringAsFixed(widget.playback.speed < 1 ? 2 : 1)}x',
+                        ),
+                        const SizedBox(width: 8),
+                        AppMenuChevron(open: open),
+                      ],
+                    ),
                   ),
                 ),
               ),

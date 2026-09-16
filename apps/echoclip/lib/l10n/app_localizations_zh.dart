@@ -119,7 +119,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get presetSaveDuration => '预设';
 
   @override
-  String get customSaveDuration => '自定义';
+  String get customSaveDuration => '缓存区间';
 
   @override
   String get customSaveSeconds => '保存时长（秒）';
@@ -568,7 +568,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bufferDurationMinutes => '缓存时长（分钟）';
 
   @override
-  String get bufferDurationHelper => '1 到 1440 分钟';
+  String get bufferDurationHelper => '5 到 1440 分钟';
 
   @override
   String get minutesUnit => '分钟';
@@ -994,4 +994,118 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get saveWritingStatus => '正在写入录音';
+
+  @override
+  String get bufferRange => '缓存区间';
+
+  @override
+  String get bufferRangeHelp => '以整秒选择区间。00:00:00 表示打开窗口时最早的缓存音频，继续录音不会改变已选片段。';
+
+  @override
+  String get bufferRangeStart => '起始时间';
+
+  @override
+  String get bufferRangeEnd => '结束时间';
+
+  @override
+  String get bufferRangeInvalid => '请选择缓存内至少 1 秒的区间，分和秒须为 0–59。';
+
+  @override
+  String get bufferRangeEmpty => '缓存至少 1 秒音频后即可导出。';
+
+  @override
+  String get bufferRangeUnavailable => '无法读取缓存，请稍后重试。';
+
+  @override
+  String get bufferRangeExpired => '选中的缓存已发生变化或被清理，请重新选择区间。';
+
+  @override
+  String get saveSelectedRange => '保存选区';
+
+  @override
+  String get startupTitle => '开机自启';
+
+  @override
+  String get startupTasks => '启动操作';
+
+  @override
+  String get startupWindowsHelp => '登录 Windows 后打开 EchoClip，并执行已启用的启动任务。';
+
+  @override
+  String get startupAndroidHelp => '当前平台暂不支持开机自启。';
+
+  @override
+  String get startupTasksHelp => '启动后立即应用以下录音和上传设置。修改会自动保存，下次启动时生效。';
+
+  @override
+  String get startupDelay => '启动后延迟';
+
+  @override
+  String get startupDelayHelp => '设为 0 秒将在启动后立即执行。';
+
+  @override
+  String get startupEmpty => '暂无启动任务';
+
+  @override
+  String get startupPermission => '请允许通知权限，以便开机后显示启动入口。';
+
+  @override
+  String get startupFailed => '启动设置未能保存，请重试。';
+
+  @override
+  String get recordingVolume => '录制音量';
+
+  @override
+  String get volumeSaveFailed => '音量设置未能保存，请重试。';
+
+  @override
+  String get timeHoursShort => '时';
+
+  @override
+  String get timeMinutesShort => '分';
+
+  @override
+  String get timeSecondsShort => '秒';
+
+  @override
+  String get volumeInvalid => '请输入 0–300 之间的整数。';
+
+  @override
+  String get startupRecording => '录音操作';
+
+  @override
+  String get startupRecordingHelp => '开启后在启动时开始录音，关闭则保持停止录音。';
+
+  @override
+  String get startupUpload => '实时上传';
+
+  @override
+  String get startupUploadHelp => '启动后开启实时上传，使用已保存的服务器设置。';
+
+  @override
+  String get softwareVersion => '软件版本';
+
+  @override
+  String get chooseRecordingFolderFirst => '请选择录音目录，录音文件将保存至该目录。';
+
+  @override
+  String get startupUnsupported => '当前平台暂不支持开机自启。';
+
+  @override
+  String get startupSilent => '静默启动';
+
+  @override
+  String get startupSilentHelp => '开机自启时隐藏主窗口，保留托盘图标。需先启用开机自启。';
+
+  @override
+  String get saveFormat => '保存格式';
+
+  @override
+  String get saveFormatHelp => '默认 MP3。此设置用于手动保存；定时任务使用各自的输出格式。';
+
+  @override
+  String get wavSaveLimit => 'WAV 单个录音不可超过 4 GB，每次最多保存 4 小时。';
+
+  @override
+  String get exportSettingsFailed => '保存格式设置失败，请重试。';
 }
